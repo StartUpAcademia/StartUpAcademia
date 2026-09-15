@@ -17,7 +17,13 @@ export function createBrowserSpeech(callbacks: {
   if (!Ctor || !window.speechSynthesis) return null;
   const recognition: SpeechRecognitionLike = new Ctor();
   recognition.lang = 'ja-JP'; recognition.continuous = true; recognition.interimResults = true;
+  // iOS can reject a new recognition session that is started without another tap.
+  // Keep the session that was opened by the user's tap alive while guidance is spoken.
+  const keepRecognitionDuringSpeech = /iP(?:hone|ad|od)/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   let active = true, enabled = false, speaking = false, running = false, disposed = false;
+  let speechUnlocked = !keepRecognitionDuringSpeech;
+  let ignoreResultsUntil = 0;
   let startupTimer: ReturnType<typeof setTimeout> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const isVisible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
@@ -47,9 +53,23 @@ export function createBrowserSpeech(callbacks: {
     stopRecognition();
     status('error'); callbacks.error(message);
   };
+  const unlockSpeech = () => {
+    if (speechUnlocked) return;
+    try {
+      // WebKit removes its speech-playback gesture restriction when speak() is
+      // called synchronously from the same tap that starts recognition.
+      const unlock = new SpeechSynthesisUtterance('');
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
+      window.speechSynthesis.cancel();
+      speechUnlocked = true;
+    } catch (error) {
+      console.warn('SpeechSynthesis unlock failed', error);
+    }
+  };
   let stopped: (() => void) | undefined;
   let cancelSpeech: (() => void) | undefined;
-  function start() {
+  function start(fromUserTap = false) {
     if (!enabled || speaking || running || disposed || !canRun()) return;
     if (!window.isSecureContext) {
       fail('マイクを利用するにはHTTPSまたはlocalhostで開いてください。');
@@ -61,7 +81,7 @@ export function createBrowserSpeech(callbacks: {
     startupTimer = setTimeout(() => {
       if (disposed || !canRun()) return;
       fail('音声認識が開始されませんでした。ブラウザのマイク許可と通信接続を確認して、再接続してください。');
-    }, 12000);
+    }, fromUserTap && keepRecognitionDuringSpeech ? 45000 : 12000);
     try {
       recognition.start();
     } catch (error) {
@@ -87,7 +107,7 @@ export function createBrowserSpeech(callbacks: {
     if (enabled && !speaking && !disposed && canRun()) { status('reconnecting'); timer = setTimeout(start, 350); }
   };
   recognition.onresult = event => {
-    if (speaking || disposed) return;
+    if (speaking || disposed || Date.now() < ignoreResultsUntil) return;
     let final = '', interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const result = event.results[i];
@@ -117,8 +137,9 @@ export function createBrowserSpeech(callbacks: {
     start() {
       if (disposed || speaking || !canRun()) return;
       callbacks.error('');
+      unlockSpeech();
       enabled = true;
-      start();
+      start(true);
     },
     setActive(nextActive) {
       if (disposed || active === nextActive) return;
@@ -138,7 +159,7 @@ export function createBrowserSpeech(callbacks: {
     async speak(text) {
       if (disposed || !canRun()) return;
       speaking = true; status('speaking'); clearTimeout(timer); clearTimeout(startupTimer); callbacks.interim('');
-      if (running) await new Promise<void>(resolve => {
+      if (running && !keepRecognitionDuringSpeech) await new Promise<void>(resolve => {
         let settled = false;
         const finish = () => {
           if (settled) return;
@@ -157,15 +178,55 @@ export function createBrowserSpeech(callbacks: {
       await new Promise<void>(resolve => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ja-JP'; utterance.rate = 1;
-        const finish = () => { clearTimeout(timeout); cancelSpeech = undefined; resolve(); };
-        const timeout = setTimeout(() => { window.speechSynthesis.cancel(); callbacks.error('音声案内を再生できませんでした。画面の案内を確認してください。'); finish(); }, 45000);
+        if (keepRecognitionDuringSpeech) {
+          utterance.volume = 1;
+          const japaneseVoice = window.speechSynthesis.getVoices().find(voice => voice.lang.replace('_', '-').toLowerCase().startsWith('ja'));
+          if (japaneseVoice) utterance.voice = japaneseVoice;
+        }
+        let settled = false;
+        let started = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(startupTimeout); clearTimeout(timeout);
+          cancelSpeech = undefined;
+          resolve();
+        };
+        const playbackError = () => {
+          if (settled) return;
+          window.speechSynthesis.cancel();
+          callbacks.error(keepRecognitionDuringSpeech
+            ? '音声案内を再生できませんでした。画面の案内を確認し、そのまま名前を話してください。'
+            : '音声案内を再生できませんでした。画面の案内を確認してください。');
+          finish();
+        };
+        const startupTimeout = keepRecognitionDuringSpeech
+          ? setTimeout(() => { if (!started) playbackError(); }, 3000)
+          : undefined;
+        const timeout = setTimeout(playbackError, keepRecognitionDuringSpeech
+          ? Math.min(45000, Math.max(8000, text.length * 500))
+          : 45000);
         cancelSpeech = finish;
+        if (keepRecognitionDuringSpeech) utterance.onstart = () => { started = true; clearTimeout(startupTimeout); };
         utterance.onend = finish;
-        utterance.onerror = () => { callbacks.error('音声案内を再生できませんでした。画面の案内を確認してください。'); finish(); };
+        utterance.onerror = event => {
+          console.warn('SpeechSynthesis failed', { error: event.error });
+          playbackError();
+        };
         window.speechSynthesis.speak(utterance);
       });
       speaking = false;
-      if (!disposed && canRun()) { status(enabled ? 'reconnecting' : 'permission_required'); if (enabled) timer = setTimeout(start, 300); }
+      if (!disposed && canRun()) {
+        if (running) {
+          // Ignore a short tail of the spoken guidance without closing the iOS mic session.
+          ignoreResultsUntil = Date.now() + 250;
+          callbacks.listening(true);
+          status('listening');
+        } else {
+          status(enabled ? 'reconnecting' : 'permission_required');
+          if (enabled) timer = setTimeout(start, 300);
+        }
+      }
     },
     dispose() {
       disposed = true; active = false; enabled = false; speaking = false;

@@ -7,8 +7,9 @@ import ts from 'typescript';
 const source = ts.transpileModule(readFileSync(new URL('../lib/voice/browserSpeech.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 function setup(supported = true, options = {}) {
   let recognition, utterance;
+  const spoken = [];
   const events = { final: [], interim: [], error: [], listening: [], status: [] };
-  let starts = 0;
+  let starts = 0, aborts = 0;
   const timers = new Map();
   const schedule = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
   const unschedule = id => timers.delete(id);
@@ -17,14 +18,17 @@ function setup(supported = true, options = {}) {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     constructor() { recognition = this; }
     start() { starts++; if (options.startError) throw { name: options.startError, message: 'failed' }; if (!options.silentStart) this.onstart?.(); }
-    abort() { if (!options.silentAbort) this.onend?.(); }
+    abort() { aborts++; if (!options.silentAbort) this.onend?.(); }
   }
-  const window = { isSecureContext: options.secure !== false, SpeechRecognition: supported ? Recognition : undefined, speechSynthesis: { speak: u => { utterance = u; }, cancel() {} } };
-  const navigator = {};
+  const voices = options.voices ?? [];
+  const window = { isSecureContext: options.secure !== false, SpeechRecognition: supported ? Recognition : undefined, speechSynthesis: { speak: u => { utterance = u; spoken.push(u); }, cancel() {}, getVoices: () => voices } };
+  const navigator = options.ios
+    ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5 }
+    : { userAgent: 'Mozilla/5.0', platform: 'Win32', maxTouchPoints: 0 };
   const exports = {};
   vm.runInNewContext(source, { exports, window, navigator, SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } }, setTimeout: schedule, clearTimeout: unschedule });
   const service = exports.createBrowserSpeech(Object.fromEntries(Object.keys(events).map(key => [key, value => events[key].push(value)])));
-  return { service, events, get starts() { return starts; }, fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.fn(); } }, get recognition() { return recognition; }, get utterance() { return utterance; } };
+  return { service, events, spoken, get starts() { return starts; }, get aborts() { return aborts; }, fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.fn(); } }, get recognition() { return recognition; }, get utterance() { return utterance; } };
 }
 test('unsupported browser reports no service', () => assert.equal(setup(false).service, null));
 test('interim and final callbacks; recognition is muted during speech and disposed', async () => {
@@ -57,6 +61,26 @@ test('silent recognition startup times out instead of falsely showing microphone
   env.fire(12000); assert.equal(env.events.status.at(-1), 'error');
   env.service.start(); await flush(); assert.equal(env.starts, 2); env.service.dispose();
 });
+test('iPhone permission prompt is not aborted by the shorter reconnect timeout', () => {
+  const env = setup(true, { ios: true, silentStart: true }); env.service.start();
+  env.fire(12000);
+  assert.equal(env.events.status.at(-1), 'starting');
+  assert.equal(env.aborts, 0);
+  env.recognition.onstart();
+  assert.equal(env.events.status.at(-1), 'listening');
+  assert.equal(env.aborts, 0);
+  env.service.dispose();
+});
+test('iPhone reconnects when recognition ends immediately after permission', () => {
+  const env = setup(true, { ios: true }); env.service.start();
+  env.recognition.onend();
+  assert.equal(env.events.status.at(-1), 'reconnecting');
+  env.fire(350);
+  assert.equal(env.starts, 2);
+  assert.equal(env.events.status.at(-1), 'listening');
+  assert.equal(env.events.error.at(-1), '');
+  env.service.dispose();
+});
 test('duplicate manual starts are ignored while recognition is starting', () => {
   const env = setup(true, { silentStart: true }); env.service.start(); env.service.start();
   assert.equal(env.starts, 1); env.service.dispose();
@@ -68,6 +92,43 @@ test('speech resumes recognition even when Safari omits the abort end event', as
   env.utterance.onend(); await speaking;
   env.fire(300);
   assert.equal(env.starts, 2); env.service.dispose();
+});
+test('desktop keeps the original recognition and speech timing', async () => {
+  const env = setup(); env.service.start();
+  assert.equal(env.spoken.length, 0);
+  const speaking = env.service.speak('誰の記録をしますか？');
+  await flush();
+  assert.equal(env.utterance.voice, undefined);
+  env.fire(3000);
+  assert.equal(env.events.status.at(-1), 'speaking');
+  env.utterance.onend(); await speaking;
+  env.fire(300);
+  assert.equal(env.starts, 2);
+  env.service.dispose();
+});
+test('iPhone keeps the tap-started recognition session alive while guidance is spoken', async () => {
+  const japaneseVoice = { lang: 'ja-JP', name: 'Kyoko' };
+  const env = setup(true, { ios: true, voices: [japaneseVoice] }); env.service.start();
+  assert.equal(env.spoken.length, 1);
+  assert.equal(env.spoken[0].volume, 0);
+  const speaking = env.service.speak('誰の記録をしますか？');
+  assert.equal(env.aborts, 0);
+  assert.equal(env.utterance.voice, japaneseVoice);
+  assert.equal(env.utterance.volume, 1);
+  env.utterance.onstart();
+  env.utterance.onend(); await speaking;
+  assert.equal(env.starts, 1);
+  assert.equal(env.events.status.at(-1), 'listening');
+  env.service.dispose();
+});
+test('blocked iPhone guidance returns to listening instead of ignoring speech for 45 seconds', async () => {
+  const env = setup(true, { ios: true }); env.service.start();
+  const speaking = env.service.speak('誰の記録をしますか？');
+  env.fire(3000); await speaking;
+  assert.equal(env.events.error.at(-1), '音声案内を再生できませんでした。画面の案内を確認し、そのまま名前を話してください。');
+  assert.equal(env.events.status.at(-1), 'listening');
+  assert.equal(env.starts, 1);
+  env.service.dispose();
 });
 test('inactive pages release recognition and do not reconnect in the background', async () => {
   const env = setup(); env.service.start();
