@@ -93,3 +93,38 @@ export function getRawTranscripts(residentId: string): { createdAt: string; text
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map((r) => ({ createdAt: r.createdAt, text: r.rawTranscript }));
 }
+
+// Drafts are private to this tab; only commitDraft publishes to the record list.
+const DRAFT_KEY = 'care.drafts';
+export function getDraft(residentId: string): CareRecord | null {
+  if (typeof window === 'undefined') return null;
+  const drafts = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || '{}');
+  const draft = drafts[residentId] as CareRecord | undefined;
+  return draft && !getRecords().some(r => r.id === draft.id) ? draft : null;
+}
+export function appendDraft(record: CareRecord) {
+  const drafts = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || '{}');
+  const previous = getDraft(record.residentId);
+  const values = new Map(previous?.fields.map(f => [f.fieldId, f]) || []);
+  for (const field of record.fields) {
+    if (!field.isMissing && field.value.trim()) {
+      const isNote = getFormatFields().some(f => f.id === field.fieldId && /特記|備考|メモ/.test(f.label));
+      const existing = values.get(field.fieldId);
+      values.set(field.fieldId, isNote && existing ? {...field, value: existing.value + '。' + field.value} : field);
+    }
+  }
+  drafts[record.residentId] = {
+    ...record, id: previous?.id || record.id,
+    createdAt: previous?.createdAt || record.createdAt,
+    rawTranscript: [previous?.rawTranscript, record.rawTranscript].filter(Boolean).join('\n'),
+    fields: [...values.values()],
+  };
+  sessionStorage.setItem(DRAFT_KEY, JSON.stringify(drafts));
+  window.dispatchEvent(new Event('care:draft'));
+}
+export function commitDraft(residentId: string) {
+  const draft = getDraft(residentId);
+  if (!draft) throw new Error('保存する下書きがありません');
+  addRecord({...draft, content: undefined, category: undefined});
+  // Keeping the committed ID makes retries harmless even after a storage failure.
+}
