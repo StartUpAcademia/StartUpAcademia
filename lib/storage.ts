@@ -1,11 +1,12 @@
 "use client";
 
-import { CareRecord, FormatField } from "./types";
+import { CareRecord, FacilityRecordSchema, FormatField } from "./types";
 import { DEFAULT_FORMAT_FIELDS } from "./constants";
 
 const FORMAT_FIELDS_KEY = "care.formatFields";
 const FORMAT_CONFIGURED_KEY = "care.formatConfigured";
 const RECORDS_KEY = "care.records";
+const FACILITY_SCHEMAS_KEY = "care.facilitySchemas";
 
 function read<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -34,6 +35,25 @@ export function saveFormatFields(fields: FormatField[]) {
 
 export function isFormatConfigured(): boolean {
   return read<boolean>(FORMAT_CONFIGURED_KEY, false);
+}
+
+/**
+ * 施設ごとの記録フォーマット（記録用紙の写真・AI抽出結果・管理者確認済み項目）を保持する。
+ * 現状アプリは単一施設のみ運用するが、施設IDをキーにしたレコードとして保存しておくことで、
+ * 将来複数施設に対応する際もデータ構造の変更なしに拡張できる。
+ */
+export function getFacilitySchema(facilityId: string): FacilityRecordSchema | null {
+  const all = read<Record<string, FacilityRecordSchema>>(FACILITY_SCHEMAS_KEY, {});
+  return all[facilityId] ?? null;
+}
+
+export function saveFacilitySchema(schema: FacilityRecordSchema) {
+  const all = read<Record<string, FacilityRecordSchema>>(FACILITY_SCHEMAS_KEY, {});
+  all[schema.facilityId] = schema;
+  write(FACILITY_SCHEMAS_KEY, all);
+  // 音声記録・個人ページなど既存機能はすべて getFormatFields() を参照しているため，
+  // 施設schemaの保存と同時にここも更新し、既存の動作をそのまま活かす。
+  saveFormatFields(schema.fields);
 }
 
 export function getRecords(): CareRecord[] {

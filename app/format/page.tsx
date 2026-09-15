@@ -1,21 +1,42 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { FormatField } from "@/lib/types";
-import { saveFormatFields } from "@/lib/storage";
+import { FacilityRecordSchema, FormatField } from "@/lib/types";
+import { getFacilitySchema, saveFacilitySchema } from "@/lib/storage";
+import { CURRENT_FACILITY_ID, FACILITY_NAME, REQUIRED_FIELD_DEFS } from "@/lib/constants";
 
-type Mode = "capture" | "loading" | "review";
+type Mode = "capture" | "loading" | "review" | "current";
 
 let nextLocalId = 1000;
+
+interface PendingImage {
+  base64: string;
+  mediaType: string;
+  dataUrl: string;
+}
 
 export default function FormatPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<Mode>("capture");
   const [fields, setFields] = useState<FormatField[]>([]);
+  const [aiExtractedFields, setAiExtractedFields] = useState<FormatField[]>([]);
+  const [missingFields, setMissingFields] = useState<string[]>([]);
+  const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [existingSchema, setExistingSchema] = useState<FacilityRecordSchema | null>(null);
+
+  useEffect(() => {
+    const schema = getFacilitySchema(CURRENT_FACILITY_ID);
+    if (schema) {
+      // Initial hydration from the browser-only facility schema store.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setExistingSchema(schema);
+      setMode("current");
+    }
+  }, []);
 
   function handleTapCapture() {
     fileInputRef.current?.click();
@@ -26,11 +47,19 @@ export default function FormatPage() {
     e.target.value = "";
     if (!file) return;
 
+    const allowed = ["image/jpeg", "image/jpg", "image/png"];
+    if (!allowed.includes(file.type)) {
+      setError("対応していない画像形式です。jpg・jpeg・png形式の画像を選択してください。");
+      return;
+    }
+
     setError(null);
     setMode("loading");
 
     try {
-      const { base64, mediaType } = await fileToBase64(file);
+      const { base64, mediaType, dataUrl } = await fileToBase64(file);
+      setPendingImage({ base64, mediaType, dataUrl });
+
       const res = await fetch("/api/extract-format", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -38,17 +67,26 @@ export default function FormatPage() {
       });
       if (!res.ok) throw new Error("抽出APIの呼び出しに失敗しました");
       const data = await res.json();
-      const extracted = data.fields as { label: string; type: string }[];
+      const extracted = data.fields as { key: string; label: string; found: boolean }[];
+      const missing = (data.missingFields as string[] | undefined) ?? [];
 
-      setFields(
-        extracted.map((f, i) => ({
-          id: `field-${nextLocalId++}`,
-          label: f.label,
-          type: f.type,
-          required: true,
-          order: i,
-        }))
-      );
+      const merged: FormatField[] = REQUIRED_FIELD_DEFS.map((def, i) => ({
+        id: `field-${nextLocalId++}`,
+        label: def.label,
+        type: def.type,
+        required: true,
+        order: i,
+        key: def.key,
+        kind: def.kind,
+        unit: def.unit,
+        options: def.options ? [...def.options] : undefined,
+        aliases: [...def.aliases],
+        detected: extracted.find((f) => f.key === def.key)?.found ?? false,
+      }));
+
+      setAiExtractedFields(merged.map((f) => ({ ...f })));
+      setMissingFields(missing);
+      setFields(merged);
       setMode("review");
     } catch (err) {
       console.error(err);
@@ -68,18 +106,34 @@ export default function FormatPage() {
   function addField() {
     setFields((prev) => [
       ...prev,
-      { id: `field-${nextLocalId++}`, label: "新しい項目", type: "自由記述", required: false, order: prev.length },
+      { id: `field-${nextLocalId++}`, label: "新しい項目", type: "自由記述", kind: "text", required: false, order: prev.length },
     ]);
   }
 
   function confirm() {
+    if (!pendingImage) return;
     const ordered = fields.map((f, i) => ({ ...f, order: i }));
-    saveFormatFields(ordered);
+    const now = new Date().toISOString();
+    const schema: FacilityRecordSchema = {
+      id: existingSchema?.id ?? `schema-${Date.now()}`,
+      facilityId: CURRENT_FACILITY_ID,
+      schemaName: `${FACILITY_NAME} 記録フォーマット`,
+      createdAt: existingSchema?.createdAt ?? now,
+      updatedAt: now,
+      sourceImage: pendingImage.dataUrl,
+      extractedAt: now,
+      aiExtractedFields,
+      fields: ordered,
+    };
+    saveFacilitySchema(schema);
     router.push("/");
   }
 
   function recapture() {
     setFields([]);
+    setAiExtractedFields([]);
+    setMissingFields([]);
+    setPendingImage(null);
     setMode("capture");
   }
 
@@ -90,15 +144,59 @@ export default function FormatPage() {
           <Link href="/" className="text-muted-2 hover:text-primary" aria-label="ホームへ戻る">
             ←
           </Link>
-          <div className="text-xs font-medium text-muted">初期設定・1回のみ</div>
+          <div className="text-xs font-medium text-muted">記録フォーマットを設定</div>
         </div>
-        <div className="mt-1 text-[19px] font-semibold">記録フォーマットの登録</div>
+        <div className="mt-1 text-[19px] font-semibold">{FACILITY_NAME}</div>
       </div>
+
+      {mode === "current" && existingSchema && (
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-5">
+          <p className="text-sm leading-relaxed text-[#4A493F]">
+            現在、この施設ではこの記録用紙をもとに作成したフォーマットを使用しています。
+          </p>
+
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={existingSchema.sourceImage}
+            alt="登録済みの記録用紙"
+            className="w-full rounded-xl border border-border object-contain"
+          />
+          <p className="text-xs text-muted-2">
+            抽出日時：{new Date(existingSchema.extractedAt).toLocaleString("ja-JP")}
+          </p>
+
+          <div className="mt-1 text-xs font-semibold tracking-wide text-muted">現在の記録項目</div>
+          <div className="flex flex-col gap-2">
+            {existingSchema.fields.map((field) => (
+              <div key={field.id} className="flex items-center justify-between gap-3 rounded-[10px] border border-border bg-surface p-3">
+                <span className="text-sm font-medium">{field.label}</span>
+                <span className="text-[11px] text-muted-2">
+                  {field.type}
+                  {field.unit ? `（${field.unit}）` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setExistingSchema(null);
+              recapture();
+            }}
+            className="mt-2 w-full rounded-xl border border-border py-3.5 text-[15px] font-semibold text-primary hover:bg-primary-soft/40"
+          >
+            記録用紙を撮り直して設定し直す
+          </button>
+        </div>
+      )}
 
       {mode === "capture" && (
         <div className="flex flex-1 flex-col gap-5 px-5 py-6">
           <p className="text-sm leading-relaxed text-[#4A493F]">
-            普段お使いの記録用紙を撮影してください。項目をAIが読み取り，以降はその項目に合わせて音声記録が作成されます。
+            普段お使いの記録用紙を撮影、またはアップロードしてください。体温・血圧・朝食/昼食/夕食の摂取量・
+            水分摂取量・排便・入浴時間・特記事項の9項目をAIが読み取り、以降はその項目に合わせて音声記録が作成されます。
+            未記入の用紙でも構いません。対応形式：jpg・jpeg・png
           </p>
 
           <button
@@ -107,7 +205,7 @@ export default function FormatPage() {
             className="flex flex-1 min-h-[220px] flex-col items-center justify-center gap-3.5 rounded-2xl border-2 border-dashed border-[#C9C4B5] bg-surface"
           >
             <CameraIcon className="h-11 w-11" stroke="#8A897F" />
-            <span className="text-[13px] text-muted-2">タップして撮影する</span>
+            <span className="text-[13px] text-muted-2">タップして撮影・またはアップロード</span>
           </button>
 
           {error && <p className="text-[13px] text-red-600">{error}</p>}
@@ -117,7 +215,7 @@ export default function FormatPage() {
             onClick={handleTapCapture}
             className="w-full rounded-xl bg-primary py-4 text-[15px] font-semibold text-white hover:bg-primary-dark"
           >
-            記録用紙を撮影する
+            記録用紙を撮影・アップロードする
           </button>
         </div>
       )}
@@ -125,7 +223,7 @@ export default function FormatPage() {
       {mode === "loading" && (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-5">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary-soft border-t-primary" />
-          <p className="text-sm text-muted">写真から項目を読み取っています…</p>
+          <p className="text-sm text-muted">写真から記録項目を読み取っています…</p>
         </div>
       )}
 
@@ -136,17 +234,31 @@ export default function FormatPage() {
               <FileIcon className="h-[18px] w-[18px]" stroke="#9B968A" />
             </div>
             <div className="flex flex-col gap-0.5">
-              <div className="text-[13px] font-semibold">撮影が完了しました</div>
-              <div className="text-xs text-muted">記入用紙のイメージを読み取りました</div>
+              <div className="text-[13px] font-semibold">記録用紙から以下の項目を検出しました</div>
+              <div className="text-xs text-muted">内容を確認し、必要に応じて修正してください</div>
             </div>
           </div>
 
-          <div className="mt-1 text-xs font-semibold tracking-wide text-muted">AIが読み取った記入項目</div>
+          {missingFields.length > 0 && (
+            <p className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs leading-relaxed text-amber-900">
+              次の項目は自動検出できませんでした。用紙の内容を確認し、必要であれば項目名や別名を手動で修正してください：
+              {" "}
+              {missingFields
+                .map((key) => REQUIRED_FIELD_DEFS.find((d) => d.key === key)?.label ?? key)
+                .join("、")}
+            </p>
+          )}
 
           <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
             {fields.map((field) => (
               <div key={field.id} className="flex flex-col gap-2 rounded-[10px] border border-border bg-surface p-3">
                 <div className="flex items-center gap-2">
+                  <span
+                    className={`shrink-0 text-[15px] ${field.detected ? "text-primary" : "text-muted-2"}`}
+                    aria-label={field.detected ? "検出済み" : "未検出"}
+                  >
+                    {field.key ? (field.detected ? "☑" : "☐") : "＋"}
+                  </span>
                   <input
                     value={field.label}
                     onChange={(e) => updateField(field.id, { label: e.target.value })}
@@ -162,13 +274,25 @@ export default function FormatPage() {
                     ×
                   </button>
                 </div>
-                <div className="flex items-center gap-2">
+
+                {field.key && !field.detected && (
+                  <p className="text-[11px] text-amber-700">この用紙からは自動検出できませんでした。内容を確認してください。</p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
                   <input
                     list="field-type-options"
                     value={field.type}
                     onChange={(e) => updateField(field.id, { type: e.target.value })}
-                    className="w-36 rounded-md border border-border bg-transparent px-1.5 py-1 text-[11px] text-muted-2 focus:outline-none"
+                    className="w-32 rounded-md border border-border bg-transparent px-1.5 py-1 text-[11px] text-muted-2 focus:outline-none"
                     aria-label="項目の種別"
+                  />
+                  <input
+                    value={field.unit ?? ""}
+                    onChange={(e) => updateField(field.id, { unit: e.target.value || undefined })}
+                    placeholder="単位（例：℃, mL, mmHg）"
+                    className="w-32 rounded-md border border-border bg-transparent px-1.5 py-1 text-[11px] text-muted-2 focus:outline-none"
+                    aria-label="単位"
                   />
                   <label className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-2">
                     <input
@@ -179,6 +303,32 @@ export default function FormatPage() {
                     必須
                   </label>
                 </div>
+
+                {(field.kind === "select" || field.kind === "defecation") && (
+                  <input
+                    value={(field.options ?? []).join("、")}
+                    onChange={(e) =>
+                      updateField(field.id, {
+                        options: e.target.value.split(/[、,]/).map((s) => s.trim()).filter(Boolean),
+                      })
+                    }
+                    placeholder="選択肢（例：全量、8割、5割、未摂取）"
+                    className="w-full rounded-md border border-border bg-transparent px-1.5 py-1 text-[11px] text-muted-2 focus:outline-none"
+                    aria-label="選択肢"
+                  />
+                )}
+
+                <input
+                  value={(field.aliases ?? []).join("、")}
+                  onChange={(e) =>
+                    updateField(field.id, {
+                      aliases: e.target.value.split(/[、,]/).map((s) => s.trim()).filter(Boolean),
+                    })
+                  }
+                  placeholder="別名・表記ゆれ（例：飲水量、お茶）音声入力の判定に使われます"
+                  className="w-full rounded-md border border-border bg-transparent px-1.5 py-1 text-[11px] text-muted-2 focus:outline-none"
+                  aria-label="別名"
+                />
               </div>
             ))}
             <button
@@ -196,7 +346,7 @@ export default function FormatPage() {
             disabled={fields.length === 0}
             className="mt-1 w-full rounded-xl bg-primary py-4 text-[15px] font-semibold text-white hover:bg-primary-dark disabled:opacity-40"
           >
-            この内容で設定を完了する
+            このフォーマットで保存
           </button>
           <button type="button" onClick={recapture} className="self-center text-xs text-muted-2 underline">
             別の用紙で撮り直す
@@ -207,7 +357,7 @@ export default function FormatPage() {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/jpeg,image/jpg,image/png"
         capture="environment"
         className="hidden"
         onChange={handleFileChange}
@@ -223,14 +373,14 @@ export default function FormatPage() {
   );
 }
 
-function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
+function fileToBase64(file: File): Promise<{ base64: string; mediaType: string; dataUrl: string }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
       const [prefix, data] = result.split(",");
       const mediaType = prefix.match(/data:(.*);base64/)?.[1] || file.type || "image/jpeg";
-      resolve({ base64: data, mediaType });
+      resolve({ base64: data, mediaType, dataUrl: result });
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);

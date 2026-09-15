@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { extractFormatFieldsFromImage } from "@/lib/claude";
+import { extractFacilityRecordFields, validateRequiredFields } from "@/lib/claude";
 
 export async function POST(request: Request) {
   const body = await request.json();
@@ -10,8 +10,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const fields = await extractFormatFieldsFromImage(imageBase64, mediaType);
-    return NextResponse.json({ fields });
+    const fields = await extractFacilityRecordFields(imageBase64, mediaType);
+    const { success, missingFields } = validateRequiredFields(fields);
+    return NextResponse.json({ fields, success, missingFields });
   } catch (err) {
     console.error("extract-format failed", err);
     return NextResponse.json({ error: "抽出に失敗しました" }, { status: 500 });

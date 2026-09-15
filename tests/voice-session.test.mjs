@@ -31,3 +31,56 @@ test('end never publishes unconfirmed content or empty records',async()=>{
 test('correction and duplicate yes do not publish',async()=>{
  const {session,store}=setup();await session.hear('ヘイケア');await session.hear('田中花子さん');await session.hear('体温39度');await session.hear('訂正');await session.hear('体温39.4度');await Promise.all([session.hear('はい'),session.hear('はい')]);assert.equal(store.getRecords().length,0);assert.equal(store.getDraft('r1').rawTranscript,'体温39.4度');
 });
+
+// 施設の記録用紙（写真）から生成した固定9項目schema向けのケース（P-1章の完了確認シナリオ）。
+// key/kind/aliasesを持つフィールドは、この施設専用の選択肢・形式で構造化される。
+const FACILITY_SCHEMA_FIELDS = [
+ {id:'f-temp',label:'体温',type:'数値',required:true,order:0,key:'body_temperature',kind:'number',unit:'℃',aliases:['体温','検温']},
+ {id:'f-water',label:'水分摂取量',type:'数値',required:true,order:1,key:'water_intake',kind:'number',unit:'mL',aliases:['水分摂取量','水分量','飲水量','水分','お茶']},
+ {id:'f-breakfast',label:'朝食の摂取量',type:'選択肢',required:true,order:2,key:'breakfast_intake',kind:'select',options:['全量','8割','5割','未摂取'],aliases:['朝食','朝食摂取量','朝食の摂取量']},
+ {id:'f-defecation',label:'排便',type:'選択肢',required:true,order:3,key:'defecation',kind:'defecation',options:['普通','軟便','下痢'],aliases:['排便','便']},
+ {id:'f-bathing',label:'入浴時間',type:'時刻',required:true,order:4,key:'bathing_time',kind:'time_range',aliases:['入浴時間','入浴']},
+ {id:'f-notes',label:'特記事項',type:'自由記述',required:false,order:5,key:'special_notes',kind:'text',aliases:['特記事項','気づいたこと']},
+];
+
+test('facility schema: a single utterance with two values maps to two structured fields',()=>{
+ const r=parser.structureLocal('体温37.2度、水分150',FACILITY_SCHEMA_FIELDS);
+ const temp=r.find(f=>f.fieldId==='f-temp'), water=r.find(f=>f.fieldId==='f-water');
+ assert.equal(temp.value,'37.2℃'); assert.equal(temp.isMissing,false);
+ assert.equal(water.value,'150mL'); assert.equal(water.isMissing,false);
+});
+test('facility schema: 排便あり maps to defecation field with value "あり"',()=>{
+ const r=parser.structureLocal('排便あり',FACILITY_SCHEMA_FIELDS);
+ const defecation=r.find(f=>f.fieldId==='f-defecation');
+ assert.equal(defecation.value,'あり'); assert.equal(defecation.isMissing,false);
+});
+test('facility schema: meal intake is limited to the fixed 4 options (全量/8割/5割/未摂取)',()=>{
+ const r=parser.structureLocal('朝食は8割でした',FACILITY_SCHEMA_FIELDS);
+ assert.equal(r.find(f=>f.fieldId==='f-breakfast').value,'8割');
+});
+test('facility schema: bathing time range and 未実施 are both recognized',()=>{
+ const done=parser.structureLocal('入浴時間は10時30分から11時',FACILITY_SCHEMA_FIELDS);
+ assert.equal(done.find(f=>f.fieldId==='f-bathing').value,'10:30〜11:00');
+ const skipped=parser.structureLocal('入浴時間は未実施',FACILITY_SCHEMA_FIELDS);
+ assert.equal(skipped.find(f=>f.fieldId==='f-bathing').value,'未実施');
+});
+test('facility schema: unmapped utterances are kept, not discarded (special_notes fallback)',()=>{
+ const r=parser.structureLocal('廊下で少しふらついていました',FACILITY_SCHEMA_FIELDS);
+ assert.equal(r.find(f=>f.fieldId==='f-notes').value,'廊下で少しふらついていました');
+});
+test('facility schema end-to-end: voice → draft (merged across utterances) → commit for 田中さん',async()=>{
+ const store=load('../lib/storage.ts',{require:()=>({DEFAULT_FORMAT_FIELDS:FACILITY_SCHEMA_FIELDS}),window:{localStorage:mem(),dispatchEvent(){}},sessionStorage:mem(),Event:class{}});
+ const selected=[];
+ const session=new VoiceSession({residents,staffId:'s1',fields:()=>FACILITY_SCHEMA_FIELDS,append:store.appendDraft,selected:r=>selected.push(r.id),speak:async()=>{},update(){}});
+ await session.hear('ヘイケア'); await session.hear('田中花子さん'); assert.deepEqual(selected,['r1']);
+ await session.hear('体温37.2度、水分150'); await session.hear('はい');
+ const draft1=store.getDraft('r1');
+ assert.equal(draft1.fields.find(f=>f.fieldId==='f-temp').value,'37.2℃');
+ assert.equal(draft1.fields.find(f=>f.fieldId==='f-water').value,'150mL');
+ await session.hear('排便あり'); await session.hear('はい');
+ const draft2=store.getDraft('r1');
+ assert.equal(draft2.fields.find(f=>f.fieldId==='f-defecation').value,'あり');
+ store.commitDraft('r1');
+ assert.equal(store.getRecords().length,1);
+ assert.equal(store.getRecords()[0].residentId,'r1');
+});

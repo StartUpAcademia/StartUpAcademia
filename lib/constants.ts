@@ -1,6 +1,37 @@
-import { FormatField, Resident, Staff } from "./types";
+import { FieldKind, FieldType, FormatField, Resident, Staff } from "./types";
 
 export const FACILITY_NAME = "さくら苑 3階フロア";
+
+// 現状アプリは単一施設のみだが、施設ごとのschemaを保持できるように
+// facilityId は最初から独立した概念として持っておく。
+export const CURRENT_FACILITY_ID = "facility-1";
+
+export interface RequiredFieldDef {
+  key: string;
+  label: string;
+  type: FieldType;
+  kind: FieldKind;
+  unit?: string;
+  options?: string[];
+  aliases: string[];
+}
+
+// 記録用紙の画像から必ず抽出を試みる固定9項目。
+// 「AIにどの項目が重要か自由に判断させない」という要件のため，
+// 抽出対象はこのリストに固定する（表記ゆれは aliases で吸収する）。
+export const REQUIRED_FIELD_DEFS: RequiredFieldDef[] = [
+  { key: "body_temperature", label: "体温", type: "数値", kind: "number", unit: "℃", aliases: ["体温", "検温"] },
+  { key: "blood_pressure", label: "血圧", type: "数値（上/下）", kind: "blood_pressure", unit: "mmHg", aliases: ["血圧", "BP"] },
+  { key: "breakfast_intake", label: "朝食の摂取量", type: "選択肢", kind: "select", options: ["全量", "8割", "5割", "未摂取"], aliases: ["朝食", "朝食摂取量", "朝食の摂取量"] },
+  { key: "lunch_intake", label: "昼食の摂取量", type: "選択肢", kind: "select", options: ["全量", "8割", "5割", "未摂取"], aliases: ["昼食", "昼食摂取量", "昼食の摂取量"] },
+  { key: "dinner_intake", label: "夕食の摂取量", type: "選択肢", kind: "select", options: ["全量", "8割", "5割", "未摂取"], aliases: ["夕食", "夕食摂取量", "夕食の摂取量"] },
+  { key: "water_intake", label: "水分摂取量", type: "数値", kind: "number", unit: "mL", aliases: ["水分摂取量", "水分量", "飲水量", "水分", "お茶"] },
+  { key: "defecation", label: "排便", type: "選択肢", kind: "defecation", options: ["普通", "軟便", "下痢"], aliases: ["排便", "便"] },
+  { key: "bathing_time", label: "入浴時間", type: "時刻", kind: "time_range", aliases: ["入浴時間", "入浴"] },
+  { key: "special_notes", label: "特記事項", type: "自由記述", kind: "text", aliases: ["特記事項", "気づいたこと", "特記", "備考"] },
+];
+
+export const REQUIRED_FIELD_KEYS = REQUIRED_FIELD_DEFS.map((d) => d.key);
 
 export const CURRENT_STAFF: Staff = {
   id: "staff-1",
