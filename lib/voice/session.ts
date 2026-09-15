@@ -106,7 +106,8 @@ export class VoiceSession {
         if (command) { await this.say('記録内容を話してください'); return; }
         const draft = structure(text, this.deps.fields());
         this.patch({ state: 'CONFIRMING', draft });
-        await this.say(`${this.snapshot.resident!.name}さん、${draft.category}、${draft.value}。元の発話は「${draft.transcript}」。この内容を確認画面に保存しますか？「はい」で項目に反映します。記録全体はまだ保存されません。`);
+        await this.say(draft.value);
+        await this.say('この内容を一時保存しますか？');
       }
     } finally { this.busy = false; }
   }
