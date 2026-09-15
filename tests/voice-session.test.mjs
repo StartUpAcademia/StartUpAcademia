@@ -7,7 +7,7 @@ import ts from 'typescript';
 const output = ts.transpileModule(readFileSync(new URL('../lib/voice/session.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const exports = {};
 vm.runInNewContext(output, { exports, crypto, Date });
-const { VoiceSession, commandOf, matchResidents } = exports;
+const { VoiceSession, commandOf, matchResidents, structure } = exports;
 const residents = [{ id: '1', name: '田中 花子', roomNumber: '1' }, { id: '2', name: '鈴木 一郎', roomNumber: '2' }];
 function setup(extra = {}) {
   const records = [], spoken = [], states = [];
@@ -62,6 +62,39 @@ test('commands are whole utterances and duplicates cannot save twice', async () 
   const { session, records } = setup(); await start(session); await session.hear('水分150');
   await Promise.all([session.hear('はい'), session.hear('はい')]); assert.equal(records.length, 1);
 });
+const FACILITY_SCHEMA_FIELDS = [
+  { id: 'f-temp', label: '体温', type: '数値', required: true, order: 0, key: 'body_temperature', kind: 'number', unit: '℃', aliases: ['体温', '検温'] },
+  { id: 'f-water', label: '水分摂取量', type: '数値', required: true, order: 1, key: 'water_intake', kind: 'number', unit: 'mL', aliases: ['水分摂取量', '水分量', '飲水量', '水分', 'お茶'] },
+  { id: 'f-defecation', label: '排便', type: '選択肢', required: true, order: 2, key: 'defecation', kind: 'defecation', options: ['普通', '軟便', '下痢'], aliases: ['排便', '便'] },
+  { id: 'f-notes', label: '特記事項', type: '自由記述', required: false, order: 3, key: 'special_notes', kind: 'text', aliases: ['特記事項', '気づいたこと'] },
+];
+
+test('facility schema (P-1章の完了確認シナリオ): a single utterance with two values maps to two structured fields', async () => {
+  const draft = structure('田中さん、体温37.2度、水分150', FACILITY_SCHEMA_FIELDS);
+  assert.equal(draft.fields.length, 2);
+  const temp = draft.fields.find((f) => f.fieldId === 'f-temp');
+  const water = draft.fields.find((f) => f.fieldId === 'f-water');
+  assert.equal(temp.value, '37.2℃'); assert.equal(temp.isMissing, false);
+  assert.equal(water.value, '150mL'); assert.equal(water.isMissing, false);
+});
+
+test('facility schema: 排便あり maps to defecation field with value "あり"', async () => {
+  const draft = structure('田中さん、排便あり', FACILITY_SCHEMA_FIELDS);
+  assert.equal(draft.fields.length, 1);
+  assert.equal(draft.fields[0].fieldId, 'f-defecation');
+  assert.equal(draft.fields[0].value, 'あり');
+  assert.equal(draft.fields[0].isMissing, false);
+  assert.equal(draft.category, '排便');
+  assert.equal(draft.value, 'あり');
+});
+
+test('facility schema: unmapped utterances are kept, not discarded (special_notes fallback)', async () => {
+  const draft = structure('廊下で少しふらついていました', FACILITY_SCHEMA_FIELDS);
+  assert.equal(draft.fields.length, 1);
+  assert.equal(draft.fields[0].fieldId, 'f-notes');
+  assert.equal(draft.fields[0].value, '廊下で少しふらついていました');
+});
+
 test('recognition retry speaks during a session without changing the target or saving', async () => {
   const { session, records, spoken } = setup(); await session.retry(); assert.equal(spoken.length, 0);
   await start(session); await session.retry(); assert.ok(spoken.at(-1).includes('もう一度'));
