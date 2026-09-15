@@ -36,13 +36,6 @@ export interface CareRecord {
   residentId: string;
   staffId: string;
   createdAt: string;
-  inputMethod?: "voice";
-  recordType?: "care" | "voice_incomplete";
-  reviewRequired?: boolean;
-  category?: string;
-  content?: string;
-  startedAt?: string;
-  endedAt?: string;
   rawTranscript: string;
   fields: CareRecordFieldValue[];
 }

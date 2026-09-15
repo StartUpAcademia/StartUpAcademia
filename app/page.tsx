@@ -1,4 +1,3 @@
-import VoiceRecordCard from "./components/VoiceRecordCard";
 import Link from "next/link";
 import { CURRENT_STAFF, FACILITY_NAME } from "@/lib/constants";
 
@@ -20,7 +19,20 @@ export default function HomePage() {
       </p>
 
       <main className="flex flex-1 flex-col justify-center gap-3.5 px-5 py-6">
-        <VoiceRecordCard />
+        <Link
+          href="/main"
+          className="flex flex-col gap-4 rounded-[18px] bg-primary px-5.5 py-6.5 text-white transition-colors hover:bg-primary-dark"
+        >
+          <span className="flex h-13 w-13 items-center justify-center rounded-full bg-white/15">
+            <MicIcon className="h-6 w-6" stroke="#FFFFFF" />
+          </span>
+          <span className="flex flex-col gap-1">
+            <span className="text-[17px] font-semibold">記録を開始する</span>
+            <span className="text-[13px] leading-relaxed text-white/85">
+              「記録開始」と話しかけるか、ここをタップしてください
+            </span>
+          </span>
+        </Link>
 
         <Link
           href="/residents"
@@ -43,6 +55,16 @@ export default function HomePage() {
         </Link>
       </div>
     </div>
+  );
+}
+
+function MicIcon({ className, stroke }: { className?: string; stroke: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 12v-2a6 6 0 0 1 12 0v2" />
+      <rect x="4" y="12" width="4" height="7" rx="2" />
+      <rect x="16" y="12" width="4" height="7" rx="2" />
+    </svg>
   );
 }
 
