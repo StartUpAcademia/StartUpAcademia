@@ -7,6 +7,8 @@ import { getFormatFields, getRecords } from "@/lib/storage";
 import { seedOtherResidentsIfNeeded } from "@/lib/seed";
 import { CareRecord, FormatField } from "@/lib/types";
 
+const DISPLAY_RESIDENTS = [...ALL_RESIDENTS, { id: "", name: "利用者未指定（要確認）", roomNumber: "―" }];
+
 const ROLE_STYLE: Record<string, { bg: string; color: string }> = {
   介護士: { bg: "#E4EFEE", color: "#2B6E68" },
   看護師: { bg: "#FBEEDD", color: "#8A5A1E" },
@@ -20,12 +22,14 @@ export default function ResidentsPage() {
 
   useEffect(() => {
     seedOtherResidentsIfNeeded();
+    // Initial hydration from the browser-only record store.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRecords(getRecords());
     setFields(getFormatFields().slice().sort((a, b) => a.order - b.order));
   }, []);
 
   const effectiveId = selectedId ?? ALL_RESIDENTS[0].id;
-  const currentResident = ALL_RESIDENTS.find((r) => r.id === effectiveId) ?? ALL_RESIDENTS[0];
+  const currentResident = DISPLAY_RESIDENTS.find((r) => r.id === effectiveId) ?? ALL_RESIDENTS[0];
 
   const timeline = useMemo(
     () =>
@@ -38,7 +42,7 @@ export default function ResidentsPage() {
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
       <aside
-        className={`${selectedId ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-border bg-surface md:w-64 md:border-r`}
+        className={`${selectedId !== null ? "hidden md:flex" : "flex"} w-full shrink-0 flex-col border-border bg-surface md:w-64 md:border-r`}
       >
         <div className="px-5 pt-6 pb-3 md:px-5 md:pt-6">
           <div className="flex items-center gap-2">
@@ -50,7 +54,7 @@ export default function ResidentsPage() {
           <div className="mt-1 text-[17px] font-semibold">入居者ごとの記録</div>
         </div>
         <div className="flex flex-col gap-1 overflow-y-auto px-3 pb-4">
-          {ALL_RESIDENTS.map((resident) => {
+          {DISPLAY_RESIDENTS.map((resident) => {
             const count = records.filter((r) => r.residentId === resident.id).length;
             const isSelected = resident.id === effectiveId;
             return (
@@ -78,7 +82,7 @@ export default function ResidentsPage() {
                     className="truncate text-sm font-medium"
                     style={{ color: isSelected ? "var(--color-primary-dark)" : "var(--foreground)" }}
                   >
-                    {resident.name}
+                    {resident.name}{records.some(r => r.residentId === resident.id && r.reviewRequired) ? " ⚠ 要確認" : ""}
                   </div>
                   <div className="text-[11px] text-muted-2">
                     {resident.roomNumber}号室{count > 0 ? ` ・ ${count}件` : ""}
@@ -90,7 +94,7 @@ export default function ResidentsPage() {
         </div>
       </aside>
 
-      <section className={`${selectedId ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
+      <section className={`${selectedId !== null ? "flex" : "hidden md:flex"} min-w-0 flex-1 flex-col`}>
         <div className="flex items-baseline justify-between gap-3 border-b border-border px-5 py-4.5 md:px-8">
           <div className="flex items-baseline gap-2.5">
             <button
@@ -124,7 +128,7 @@ export default function ResidentsPage() {
               const isExpanded = expandedId === record.id;
 
               return (
-                <div key={record.id} className="rounded-xl border border-border bg-surface">
+                <div key={record.id} className={`rounded-xl border bg-surface ${record.reviewRequired ? "border-amber-500 ring-1 ring-amber-300" : "border-border"}`}>
                   <button
                     type="button"
                     onClick={() => setExpandedId(isExpanded ? null : record.id)}
@@ -136,6 +140,10 @@ export default function ResidentsPage() {
                     </div>
                     <div className="w-px shrink-0 self-stretch bg-border" />
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      {record.reviewRequired && <div className="font-semibold text-amber-800">⚠ 要確認 ・ 音声記録未完了</div>}
+                      <div className="text-xs text-muted">{new Date(record.createdAt).toLocaleString('ja-JP')}{record.inputMethod === 'voice' ? ' ・ 音声入力' : ''}</div>
+                      {record.category && <div className="text-sm font-semibold">{record.category}：{record.content}</div>}
+                      {record.reviewRequired && <div className="text-xs text-muted">開始：{record.startedAt && new Date(record.startedAt).toLocaleString('ja-JP')}<br />終了：{record.endedAt && new Date(record.endedAt).toLocaleString('ja-JP')}</div>}
                       <div className="flex items-center gap-2">
                         {staff && (
                           <span
@@ -221,6 +229,7 @@ function isLongTextField(field: FormatField, record: CareRecord) {
 }
 
 function summaryOf(record: CareRecord, fields: FormatField[]) {
+  if (record.content) return record.content;
   const noteField = fields.find((f) => f.label.includes("特記"));
   if (noteField) {
     const fv = record.fields.find((f) => f.fieldId === noteField.id);
