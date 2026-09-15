@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useVoiceRecorder, VoiceStep } from "@/lib/useVoiceRecorder";
 import { CURRENT_RESIDENT, CURRENT_STAFF, FACILITY_NAME } from "@/lib/constants";
-import { addRecord, getFormatFields } from "@/lib/storage";
+import { appendDraft, getFormatFields } from "@/lib/storage";
 import { CareRecordFieldValue } from "@/lib/types";
 
 const STEP_CONTENT: Record<
@@ -65,7 +65,7 @@ export default function MainPage() {
     const data = await res.json();
     const structuredFields = data.fields as CareRecordFieldValue[];
 
-    addRecord({
+    appendDraft({
       id: `record-${Date.now()}`,
       residentId: CURRENT_RESIDENT.id,
       staffId: CURRENT_STAFF.id,
