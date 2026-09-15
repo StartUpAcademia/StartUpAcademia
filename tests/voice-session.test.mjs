@@ -5,7 +5,7 @@ import test from 'node:test';
 import ts from 'typescript';
 function load(path, extra={}) { const exports={}; vm.runInNewContext(ts.transpileModule(readFileSync(new URL(path,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,crypto,Date,...extra});return exports; }
 const parser=load('../lib/structure-local.ts');
-const {VoiceSession}=load('../lib/voice/session.ts',{require:()=>parser});
+const {VoiceSession,commandOf}=load('../lib/voice/session.ts',{require:()=>parser});
 const fields=['体温','血圧','食事摂取量','水分量','特記事項'].map((label,i)=>({id:String(i),label,type:'数値',order:i,required:false}));
 const residents=[{id:'r1',name:'田中 花子',roomNumber:'304'}];
 const mem=()=>{const m=new Map();return{getItem:k=>m.get(k)||null,setItem:(k,v)=>m.set(k,v)}};
@@ -15,6 +15,9 @@ function setup() {
  const session=new VoiceSession({residents,staffId:'s1',fields:()=>fields,append:store.appendDraft,selected:r=>selected.push(r.id),speak:async t=>{spoken.push(t)},update(){}});
  return {session,store,selected,spoken};
 }
+test('wake command accepts common iPhone transcription variants',()=>{
+ for(const text of ['Hey Care','Hey ケア','へいケア','「ヘイ ケア」と言いました']) assert.equal(commandOf(text),'wake');
+});
 test('temperature variants go only into temperature; custom field and residual note',()=>{
  for(const text of ['体温は39.4°c','体温は39.4°C','体温は３９．４℃','体温は39度4分']) {const r=parser.structureLocal(text,fields);assert.equal(r[0].value,'39.4℃');assert.equal(r[4].value,'');}
  const r=parser.structureLocal('体温は39.4度。血圧は120の80。水分量は200ml。右腕に赤みがあります。',fields);assert.equal(r[0].value,'39.4℃');assert.equal(r[1].value,'120 / 80');assert.equal(r[3].value,'200ml');assert.equal(r[4].value,'右腕に赤みがあります');
