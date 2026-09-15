@@ -1,10 +1,11 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ALL_RESIDENTS, CURRENT_RESIDENT } from "@/lib/constants";
-import { getFormatFields, getMergedFieldValues, getRawTranscripts } from "@/lib/storage";
+import { getFormatFields, getDraft, commitDraft } from "@/lib/storage";
+import VoiceRecordCard, { useVoiceWorkspace } from "../components/VoiceRecordCard";
 import { FormatField } from "@/lib/types";
 
 export default function ConfirmPage() {
@@ -17,6 +18,10 @@ export default function ConfirmPage() {
 
 function ConfirmPageContent() {
   const router = useRouter();
+  const voice = useVoiceWorkspace();
+  const saving = useRef(false);
+  const [error, setError] = useState("");
+  const busy = ["CONFIRMING", "SAVING", "WAKE_DETECTED", "WAITING_FOR_RESIDENT"].includes(voice.snapshot.state);
   const searchParams = useSearchParams();
   const residentId = searchParams.get("resident") || CURRENT_RESIDENT.id;
   const resident = ALL_RESIDENTS.find((r) => r.id === residentId) ?? CURRENT_RESIDENT;
@@ -29,10 +34,16 @@ function ConfirmPageContent() {
 
   useEffect(() => {
     setFields(getFormatFields().slice().sort((a, b) => a.order - b.order));
-    setMerged(getMergedFieldValues(residentId));
-    setTranscripts(getRawTranscripts(residentId));
+    const refresh = () => {
+      const draft = getDraft(residentId);
+      setMerged(Object.fromEntries((draft?.fields || []).filter(f => !f.isMissing).map(f => [f.fieldId, {value:f.value,recordId:draft!.id}])));
+      setTranscripts(draft ? [{createdAt:draft.createdAt,text:draft.rawTranscript}] : []);
+    };
+    refresh();
+    window.addEventListener('care:draft', refresh);
     setShowOriginal(false);
     setSaved(false);
+    return () => window.removeEventListener('care:draft', refresh);
   }, [residentId]);
 
   const hasAnyRecord = transcripts.length > 0;
@@ -57,14 +68,9 @@ function ConfirmPageContent() {
         </div>
       </div>
 
-      {!hasAnyRecord ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-          <p className="text-sm text-muted">まだ音声記録がありません。</p>
-          <Link href="/main" className="text-sm text-primary underline">
-            記録を開始する
-          </Link>
-        </div>
-      ) : (
+      <div className="px-5 pb-3"><VoiceRecordCard /></div>
+      <p className="px-5 pb-3 text-xs text-muted">「はい」は項目への反映です。下の「保存する」で初めて入居者ごとの記録に追加します。</p>
+      {(
         <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-5 pb-2">
           {fields.map((field) => {
             const entry = merged[field.id];
@@ -84,16 +90,7 @@ function ConfirmPageContent() {
                   <div className="text-[13px] leading-relaxed" style={{ color: "var(--color-warn-text-2)" }}>
                     もう一度話しかけて，この項目を埋めてください
                   </div>
-                  {resident.id === CURRENT_RESIDENT.id && (
-                    <Link
-                      href="/main"
-                      className="inline-flex w-fit items-center gap-1.5 rounded-[10px] px-3.5 py-2.5 text-[13px] font-semibold text-white"
-                      style={{ background: "var(--color-warn-accent)" }}
-                    >
-                      <MicIcon className="h-3.5 w-3.5" stroke="#FFFFFF" />
-                      話しかけて入力する
-                    </Link>
-                  )}
+                  <button type="button" disabled={busy} onClick={() => voice.start(resident)} className="w-fit rounded-xl bg-primary px-4 py-3 text-white disabled:opacity-40">話しかけて入力する</button>
                 </div>
               );
             }
@@ -148,7 +145,8 @@ function ConfirmPageContent() {
         </div>
       )}
 
-      {hasAnyRecord && (
+      {error && <p role="alert" className="px-5 text-red-600">{error}</p>}
+      {(
         <div className="px-5 pt-2 pb-6">
           {missingRequiredCount > 0 && (
             <p className="mb-2 text-center text-xs text-muted-2">
@@ -157,26 +155,19 @@ function ConfirmPageContent() {
           )}
           <button
             type="button"
+            disabled={!hasAnyRecord || busy || saved}
             onClick={() => {
-              setSaved(true);
-              setTimeout(() => router.push("/"), 900);
+              if (saving.current || busy || !hasAnyRecord) return;
+              saving.current = true;
+              try { commitDraft(residentId); setSaved(true); voice.finish(); router.push('/residents'); }
+              catch { setError('保存できませんでした。下書きは残っています。再度お試しください。'); saving.current = false; }
             }}
-            className="w-full rounded-xl bg-primary py-4 text-[15px] font-semibold text-white hover:bg-primary-dark"
+            className="w-full rounded-xl bg-primary py-4 text-[15px] font-semibold text-white hover:bg-primary-dark disabled:opacity-40"
           >
             {saved ? "保存しました" : "保存する"}
           </button>
         </div>
       )}
     </div>
-  );
-}
-
-function MicIcon({ className, stroke }: { className?: string; stroke: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 12v-2a6 6 0 0 1 12 0v2" />
-      <rect x="4" y="12" width="4" height="7" rx="2" />
-      <rect x="16" y="12" width="4" height="7" rx="2" />
-    </svg>
   );
 }

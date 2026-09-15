@@ -1,3 +1,4 @@
+import { structureLocal } from "./structure-local";
 import { FormatField } from "./types";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
@@ -188,35 +189,7 @@ export async function structureTranscript(
   }));
 }
 
-function mockStructure(transcript: string, fields: FormatField[]): StructuredFieldResult[] {
-  const tempMatch = transcript.match(/(3[4-9](?:\.\d)?)\s*度/);
-  const bpMatch = transcript.match(/(\d{2,3})\s*(?:の|\/|,|、)\s*(\d{2,3})/);
-  const mealMatch = transcript.match(/(全部|10割|9割|8割|7割|6割|5割|4割|3割|2割|1割|0割|半分)/);
-  const timeMatch = transcript.match(/(\d{1,2})\s*時(半|\d{1,2}分)?/);
-
-  return fields.map((f) => {
-    if (/体温/.test(f.label) && tempMatch) {
-      return { fieldId: f.id, value: `${tempMatch[1]}℃`, isMissing: false };
-    }
-    if (/血圧/.test(f.label) && bpMatch) {
-      return { fieldId: f.id, value: `${bpMatch[1]} / ${bpMatch[2]}`, isMissing: false };
-    }
-    if (/食事|摂取/.test(f.label) && mealMatch) {
-      const v = mealMatch[1] === "全部" ? "10割" : mealMatch[1] === "半分" ? "5割" : mealMatch[1];
-      return { fieldId: f.id, value: v, isMissing: false };
-    }
-    if (/時間|時刻/.test(f.label) && timeMatch) {
-      const hour = timeMatch[1].padStart(2, "0");
-      const minutePart = timeMatch[2];
-      const minute = !minutePart ? "00" : minutePart === "半" ? "30" : minutePart.replace("分", "").padStart(2, "0");
-      return { fieldId: f.id, value: `${hour}:${minute}`, isMissing: false };
-    }
-    if (/特記|備考|メモ/.test(f.label)) {
-      return { fieldId: f.id, value: transcript.trim(), isMissing: transcript.trim().length === 0 };
-    }
-    return { fieldId: f.id, value: "", isMissing: true };
-  });
-}
+function mockStructure(transcript: string, fields: FormatField[]): StructuredFieldResult[] { return structureLocal(transcript, fields); }
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

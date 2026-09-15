@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import type { Resident } from '@/lib/types';
 import { ALL_RESIDENTS, CURRENT_STAFF } from '@/lib/constants';
-import { addRecord, getFormatFields } from '@/lib/storage';
+import { appendDraft, getFormatFields } from '@/lib/storage';
 import { VoiceSession, type Snapshot } from '@/lib/voice/session';
 import { createBrowserSpeech, type SpeechService, type MicrophoneStatus } from '@/lib/voice/browserSpeech';
 
@@ -19,7 +21,11 @@ const MIC_LABELS: Record<MicrophoneStatus, string> = {
   unsupported: 'この環境では音声入力を利用できません。',
 };
 
-export default function VoiceRecordCard() {
+const VoiceContext = createContext<{panel: ReactNode; snapshot: Snapshot; start: (resident: Resident) => void; finish: () => void} | null>(null);
+export function useVoiceWorkspace() { const value = useContext(VoiceContext); if (!value) throw new Error('VoiceProvider required'); return value; }
+export default function VoiceRecordCard() { return useVoiceWorkspace().panel; }
+export function VoiceProvider({children}: {children: ReactNode}) {
+  const router = useRouter();
   const [snapshot, setSnapshot] = useState<Snapshot>({ state: 'IDLE', message: '「Hey Care」または「ヘイケア」と話しかけてください', saved: false, error: '' });
   const [micStatus, setMicStatus] = useState<MicrophoneStatus>('checking');
   const [error, setError] = useState('');
@@ -36,7 +42,8 @@ export default function VoiceRecordCard() {
     });
     service.current = speech;
     session.current = new VoiceSession({ residents: ALL_RESIDENTS, staffId: CURRENT_STAFF.id,
-      fields: getFormatFields, save: addRecord,
+      fields: getFormatFields, append: appendDraft,
+      selected: resident => router.push('/confirm?resident=' + encodeURIComponent(resident.id)),
       speak: text => speech?.speak(text) ?? Promise.resolve(),
       update: next => { if (mounted) setSnapshot(next); },
     });
@@ -46,7 +53,7 @@ export default function VoiceRecordCard() {
       else { setMicStatus('unsupported'); setError(window.isSecureContext ? 'このブラウザは音声認識・読み上げに対応していません。対応するブラウザで開いてください。' : 'マイクを利用するにはHTTPSまたはlocalhostで開いてください。'); }
     });
     return () => { mounted = false; speech?.dispose(); service.current = null; session.current = null; };
-  }, []);
+  }, [router]);
   useEffect(() => {
     if (!snapshot.saved) return;
     const timer = setTimeout(() => session.current?.clearSaved(), 2500);
@@ -54,7 +61,7 @@ export default function VoiceRecordCard() {
   }, [snapshot.saved]);
   const active = snapshot.state !== 'IDLE';
   const enable = () => { if (!service.current) { setError('このブラウザは音声認識・読み上げに対応していません。対応するブラウザで開いてください。'); return; } setError(''); service.current.start(); };
-  return (
+  const panel = (
     <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-4 rounded-[18px] bg-primary px-5.5 py-6.5 text-white" aria-live="polite" data-voice-state={snapshot.state}>
         <span className="flex h-13 w-13 items-center justify-center rounded-full bg-white/15" aria-hidden="true"><svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 12v-2a6 6 0 0 1 12 0v2" /><rect x="4" y="12" width="4" height="7" rx="2" /><rect x="16" y="12" width="4" height="7" rx="2" /></svg></span>
@@ -70,9 +77,9 @@ export default function VoiceRecordCard() {
           <p className="text-lg font-semibold">{snapshot.draft.value}</p>
           <p className="mt-2 text-sm">発話：{snapshot.draft.transcript}</p>
           <p className="mt-2 text-xs">{new Date(snapshot.draft.createdAt).toLocaleString('ja-JP')} ・ 記録者：{CURRENT_STAFF.name}</p>
-          <p className="mt-3 text-sm">この内容で登録しますか？「はい」「登録」「記録」で保存。「訂正」「違います」で修正。</p>
+          <p className="mt-3 text-sm">この内容を確認画面に保存しますか？「はい」で項目に反映（未保存）。「訂正」「違います」で修正。</p>
         </div>}
-        {snapshot.saved && <p role="status" className="rounded-lg bg-white/15 p-3 font-semibold">✓ 記録しました</p>}
+        {snapshot.saved && <p role="status" className="rounded-lg bg-white/15 p-3 font-semibold">✓ 確認画面に反映しました（未保存）</p>}
         {active && <p className="text-xs text-white/85">「END」「エンド」で終了します</p>}
       </div>
       {(error || snapshot.error) && <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">{snapshot.error || error}</p>}
@@ -86,4 +93,5 @@ export default function VoiceRecordCard() {
       </details>}
     </section>
   );
+  return <VoiceContext.Provider value={{panel, snapshot, start: resident => { session.current?.select(resident); enable(); }, finish: () => session.current?.finish()}}>{children}</VoiceContext.Provider>;
 }
