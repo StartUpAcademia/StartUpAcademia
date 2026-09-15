@@ -4,6 +4,7 @@ export type MicrophoneStatus = 'checking' | 'permission_required' | 'requesting'
 export interface SpeechService {
   autoStart(): Promise<void>;
   start(): void;
+  setActive(active: boolean): void;
   speak(text: string): Promise<void>;
   dispose(): void;
 }
@@ -16,34 +17,54 @@ export function createBrowserSpeech(callbacks: {
   if (!Ctor || !window.speechSynthesis) return null;
   const recognition: SpeechRecognitionLike = new Ctor();
   recognition.lang = 'ja-JP'; recognition.continuous = true; recognition.interimResults = true;
-  let enabled = false, speaking = false, running = false, disposed = false;
+  let active = true, enabled = false, speaking = false, running = false, disposed = false;
   let requesting = false, attempt = 0;
   let startupTimer: ReturnType<typeof setTimeout> | undefined;
   let permissionTimer: ReturnType<typeof setTimeout> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const isVisible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
+  const canRun = () => active && isVisible();
   const status = (value: MicrophoneStatus) => { if (!disposed) callbacks.status?.(value); };
+  const clearRecognitionTimers = () => {
+    clearTimeout(timer); clearTimeout(startupTimer);
+    timer = undefined; startupTimer = undefined;
+  };
+  const resolveStopped = () => {
+    const complete = stopped;
+    stopped = undefined;
+    complete?.();
+  };
+  const stopRecognition = () => {
+    clearRecognitionTimers();
+    const shouldAbort = running;
+    running = false;
+    callbacks.listening(false);
+    resolveStopped();
+    if (shouldAbort) {
+      try { recognition.abort(); } catch { /* The browser already stopped recognition. */ }
+    }
+  };
   const fail = (message: string) => {
     enabled = false;
-    clearTimeout(timer); clearTimeout(startupTimer);
-    callbacks.listening(false); status('error'); callbacks.error(message);
+    stopRecognition();
+    status('error'); callbacks.error(message);
   };
   let stopped: (() => void) | undefined;
   let cancelSpeech: (() => void) | undefined;
   function start() {
-    if (!enabled || speaking || running || disposed) return;
+    if (!enabled || speaking || running || disposed || !canRun()) return;
     status('starting');
     // start() returning does not mean recognition actually began. Wait for onstart.
     running = true;
     startupTimer = setTimeout(() => {
-      if (disposed) return;
+      if (disposed || !canRun()) return;
       fail('音声認識が開始されませんでした。ブラウザのマイク許可と通信接続を確認して、再接続してください。');
-      recognition.abort(); running = false;
     }, 12000);
     try { recognition.start(); }
-    catch { running = false; fail('音声認識を開始できません。マイクを再接続して、もう一度お試しください。'); }
+    catch { fail('音声認識を開始できません。マイクを再接続して、もう一度お試しください。'); }
   }
   async function requestMicrophone() {
-    if (disposed || requesting || running || speaking) return;
+    if (disposed || requesting || running || speaking || !canRun()) return;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       fail('マイクはHTTPSまたはlocalhostで利用できます。このPCでは http://localhost:3000 を開いてください。スマホからHTTPのIPアドレスで開く場合はHTTPSが必要です。'); return;
     }
@@ -59,30 +80,41 @@ export function createBrowserSpeech(callbacks: {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       // The recognition service acquires its own microphone; release this permission check.
       stream.getTracks().forEach(track => track.stop());
-      if (disposed || currentAttempt !== attempt) return;
+      if (disposed || currentAttempt !== attempt || !canRun()) return;
       enabled = true; start();
     } catch (error) {
       if (disposed || currentAttempt !== attempt) return;
-      const name = (error as { name?: string }).name;
+      const { name = '', message = '' } = error as { name?: string; message?: string };
+      console.warn('getUserMedia failed', { name, message });
       const messages: Record<string, string> = {
-        NotAllowedError: 'マイクが許可されていません。ブラウザのサイト設定と、Macの「システム設定 → プライバシーとセキュリティ → マイク」を確認してください。',
+        NotAllowedError: 'マイクが許可されていません。SafariのWebサイト設定と、端末の「設定 → プライバシーとセキュリティ → マイク」を確認してください。',
+        SecurityError: 'このページではマイクの利用が許可されていません。HTTPSで開き、SafariのWebサイト設定を確認してください。',
         NotFoundError: 'マイクが見つかりません。イヤホン・マイクの接続を確認してください。',
-        NotReadableError: 'マイクにアクセスできません。他のアプリの使用状況とOSのマイク設定を確認してください。',
+        NotReadableError: 'マイクが他の処理で使用中か、一時的に読み取れません。他の通話・録音を終了してから再接続してください。',
+        AbortError: 'マイクの接続が途中で中断されました。ページを表示したまま、もう一度接続してください。',
+        InvalidStateError: 'ページが操作可能な状態ではないため、マイクを開始できませんでした。Safariに戻ってから再接続してください。',
+        OverconstrainedError: 'この端末で利用できるマイク条件に一致しません。接続中のイヤホンを外して再接続してください。',
       };
-      fail(messages[name ?? ''] ?? 'マイクへの接続に失敗しました。端末とブラウザのマイク設定を確認してください。');
+      fail(messages[name] ?? `マイクへの接続に失敗しました${name ? `（${name}）` : ''}。端末とSafariのマイク設定を確認してください。`);
     } finally {
       if (currentAttempt === attempt) { requesting = false; clearTimeout(permissionTimer); }
     }
   }
   recognition.onstart = () => {
     clearTimeout(startupTimer);
-    if (disposed || !enabled || speaking) { recognition.abort(); return; }
+    startupTimer = undefined;
+    if (disposed || !enabled || speaking || !canRun()) {
+      running = false;
+      try { recognition.abort(); } catch { /* The browser already stopped recognition. */ }
+      return;
+    }
     callbacks.error(''); callbacks.listening(true); status('listening');
   };
   recognition.onend = () => {
     clearTimeout(startupTimer);
-    running = false; callbacks.listening(false); stopped?.(); stopped = undefined;
-    if (enabled && !speaking && !disposed) { status('reconnecting'); timer = setTimeout(start, 350); }
+    startupTimer = undefined;
+    running = false; callbacks.listening(false); resolveStopped();
+    if (enabled && !speaking && !disposed && canRun()) { status('reconnecting'); timer = setTimeout(start, 350); }
   };
   recognition.onresult = event => {
     if (speaking || disposed) return;
@@ -97,41 +129,69 @@ export function createBrowserSpeech(callbacks: {
   recognition.onerror = event => {
     if (event.error === 'aborted' || disposed) return;
     if (event.error === 'no-speech') { callbacks.error('聞き取れませんでした。もう一度話してください。'); callbacks.retry?.(); return; }
-    enabled = false; clearTimeout(startupTimer); callbacks.listening(false); status('error');
     const messages: Record<string, string> = {
       'not-allowed': 'マイク権限が拒否されました。ブラウザのサイト設定でマイクを許可し、再度有効にしてください。',
       'service-not-allowed': '音声認識の利用が許可されていません。ブラウザの設定を確認してください。',
       'audio-capture': 'マイクが見つかりません。イヤホン・マイクの接続を確認してください。',
       network: '音声認識の通信に失敗しました。接続を確認し、再度マイクを有効にしてください。',
     };
-    callbacks.error(messages[event.error] ?? '音声認識に失敗しました。マイクを再度有効にして話してください。');
+    fail(messages[event.error] ?? '音声認識に失敗しました。マイクを再度有効にして話してください。');
   };
   return {
     async autoStart() {
-      if (disposed) return;
+      if (disposed || !canRun()) return;
       status('checking');
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { await requestMicrophone(); return; }
       try {
         const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-        if (disposed || requesting || running) return;
+        if (disposed || requesting || running || !canRun()) return;
         if (permission.state === 'granted') await requestMicrophone();
         else if (permission.state === 'denied') fail('マイクがブロックされています。ブラウザのサイト設定でマイクを許可し、再接続してください。');
         else status('permission_required');
       } catch {
         // Some browsers cannot query microphone permission. Use an explicit user gesture.
-        if (!disposed && !requesting && !running) status('permission_required');
+        if (!disposed && !requesting && !running && canRun()) status('permission_required');
       }
     },
     start() { void requestMicrophone(); },
+    setActive(nextActive) {
+      if (disposed || active === nextActive) return;
+      active = nextActive;
+      if (!active) {
+        enabled = false;
+        attempt++;
+        requesting = false;
+        clearTimeout(permissionTimer);
+        permissionTimer = undefined;
+        speaking = false;
+        window.speechSynthesis.cancel();
+        cancelSpeech?.();
+        cancelSpeech = undefined;
+        callbacks.interim('');
+        stopRecognition();
+        return;
+      }
+      status('permission_required');
+    },
     async speak(text) {
-      if (disposed) return;
+      if (disposed || !canRun()) return;
       speaking = true; status('speaking'); clearTimeout(timer); clearTimeout(startupTimer); callbacks.interim('');
       if (running) await new Promise<void>(resolve => {
-        const timeout = setTimeout(resolve, 1000);
-        stopped = () => { clearTimeout(timeout); resolve(); };
-        recognition.abort();
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (stopped === finish) stopped = undefined;
+          running = false;
+          callbacks.listening(false);
+          resolve();
+        };
+        const timeout = setTimeout(finish, 1000);
+        stopped = finish;
+        try { recognition.abort(); } catch { finish(); }
       });
-      if (disposed) return;
+      if (disposed || !canRun()) { speaking = false; return; }
       await new Promise<void>(resolve => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ja-JP'; utterance.rate = 1;
@@ -143,10 +203,11 @@ export function createBrowserSpeech(callbacks: {
         window.speechSynthesis.speak(utterance);
       });
       speaking = false;
-      if (!disposed) { status(enabled ? 'reconnecting' : 'permission_required'); if (enabled) timer = setTimeout(start, 300); }
+      if (!disposed && canRun()) { status(enabled ? 'reconnecting' : 'permission_required'); if (enabled) timer = setTimeout(start, 300); }
     },
     dispose() {
-      disposed = true; enabled = false; attempt++; clearTimeout(permissionTimer); clearTimeout(startupTimer); clearTimeout(timer); stopped?.(); cancelSpeech?.();
+      disposed = true; active = false; enabled = false; speaking = false; attempt++; requesting = false;
+      clearTimeout(permissionTimer); clearRecognitionTimers(); resolveStopped(); cancelSpeech?.();
       recognition.onend = null; recognition.onresult = null; recognition.onerror = null; recognition.onstart = null;
       recognition.abort(); window.speechSynthesis.cancel();
     },

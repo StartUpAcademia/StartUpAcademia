@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import type { Resident } from '@/lib/types';
 import { ALL_RESIDENTS, CURRENT_STAFF } from '@/lib/constants';
 import { appendDraft, getFormatFields } from '@/lib/storage';
@@ -26,6 +26,8 @@ export function useVoiceWorkspace() { const value = useContext(VoiceContext); if
 export default function VoiceRecordCard() { return useVoiceWorkspace().panel; }
 export function VoiceProvider({children}: {children: ReactNode}) {
   const router = useRouter();
+  const pathname = usePathname();
+  const voiceRouteActive = pathname === '/' || pathname === '/confirm';
   const [snapshot, setSnapshot] = useState<Snapshot>({ state: 'IDLE', message: '「Hey Care」または「ヘイケア」と話しかけてください', saved: false, error: '' });
   const [micStatus, setMicStatus] = useState<MicrophoneStatus>('checking');
   const [error, setError] = useState('');
@@ -49,11 +51,29 @@ export function VoiceProvider({children}: {children: ReactNode}) {
     });
     queueMicrotask(() => {
       if (!mounted) return;
-      if (speech) void speech.autoStart();
-      else { setMicStatus('unsupported'); setError(window.isSecureContext ? 'このブラウザは音声認識・読み上げに対応していません。対応するブラウザで開いてください。' : 'マイクを利用するにはHTTPSまたはlocalhostで開いてください。'); }
+      if (!speech) { setMicStatus('unsupported'); setError(window.isSecureContext ? 'このブラウザは音声認識・読み上げに対応していません。対応するブラウザで開いてください。' : 'マイクを利用するにはHTTPSまたはlocalhostで開いてください。'); }
     });
     return () => { mounted = false; speech?.dispose(); service.current = null; session.current = null; };
   }, [router]);
+  useEffect(() => {
+    const speech = service.current;
+    if (!speech) return;
+    const syncActivity = () => {
+      const shouldListen = voiceRouteActive && document.visibilityState === 'visible';
+      speech.setActive(shouldListen);
+      if (shouldListen) void speech.autoStart();
+    };
+    const suspend = () => speech.setActive(false);
+    syncActivity();
+    document.addEventListener('visibilitychange', syncActivity);
+    window.addEventListener('pagehide', suspend);
+    window.addEventListener('pageshow', syncActivity);
+    return () => {
+      document.removeEventListener('visibilitychange', syncActivity);
+      window.removeEventListener('pagehide', suspend);
+      window.removeEventListener('pageshow', syncActivity);
+    };
+  }, [voiceRouteActive]);
   useEffect(() => {
     if (!snapshot.saved) return;
     const timer = setTimeout(() => session.current?.clearSaved(), 2500);
