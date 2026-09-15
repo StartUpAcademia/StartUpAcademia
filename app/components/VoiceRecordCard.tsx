@@ -27,7 +27,7 @@ export default function VoiceRecordCard() { return useVoiceWorkspace().panel; }
 export function VoiceProvider({children}: {children: ReactNode}) {
   const router = useRouter();
   const pathname = usePathname();
-  const voiceRouteActive = pathname === '/' || pathname === '/confirm';
+  const voiceRouteActive = pathname === '/' || pathname === '/confirm' || pathname === '/residents';
   const [snapshot, setSnapshot] = useState<Snapshot>({ state: 'IDLE', message: '「Hey Care」または「ヘイケア」と話しかけてください', saved: false, error: '' });
   const [micStatus, setMicStatus] = useState<MicrophoneStatus>('checking');
   const [error, setError] = useState('');
