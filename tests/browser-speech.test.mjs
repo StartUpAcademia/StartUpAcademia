@@ -61,6 +61,26 @@ test('silent recognition startup times out instead of falsely showing microphone
   env.fire(12000); assert.equal(env.events.status.at(-1), 'error');
   env.service.start(); await flush(); assert.equal(env.starts, 2); env.service.dispose();
 });
+test('iPhone permission prompt is not aborted by the shorter reconnect timeout', () => {
+  const env = setup(true, { ios: true, silentStart: true }); env.service.start();
+  env.fire(12000);
+  assert.equal(env.events.status.at(-1), 'starting');
+  assert.equal(env.aborts, 0);
+  env.recognition.onstart();
+  assert.equal(env.events.status.at(-1), 'listening');
+  assert.equal(env.aborts, 0);
+  env.service.dispose();
+});
+test('iPhone reconnects when recognition ends immediately after permission', () => {
+  const env = setup(true, { ios: true }); env.service.start();
+  env.recognition.onend();
+  assert.equal(env.events.status.at(-1), 'reconnecting');
+  env.fire(350);
+  assert.equal(env.starts, 2);
+  assert.equal(env.events.status.at(-1), 'listening');
+  assert.equal(env.events.error.at(-1), '');
+  env.service.dispose();
+});
 test('duplicate manual starts are ignored while recognition is starting', () => {
   const env = setup(true, { silentStart: true }); env.service.start(); env.service.start();
   assert.equal(env.starts, 1); env.service.dispose();
@@ -72,6 +92,19 @@ test('speech resumes recognition even when Safari omits the abort end event', as
   env.utterance.onend(); await speaking;
   env.fire(300);
   assert.equal(env.starts, 2); env.service.dispose();
+});
+test('desktop keeps the original recognition and speech timing', async () => {
+  const env = setup(); env.service.start();
+  assert.equal(env.spoken.length, 0);
+  const speaking = env.service.speak('誰の記録をしますか？');
+  await flush();
+  assert.equal(env.utterance.voice, undefined);
+  env.fire(3000);
+  assert.equal(env.events.status.at(-1), 'speaking');
+  env.utterance.onend(); await speaking;
+  env.fire(300);
+  assert.equal(env.starts, 2);
+  env.service.dispose();
 });
 test('iPhone keeps the tap-started recognition session alive while guidance is spoken', async () => {
   const japaneseVoice = { lang: 'ja-JP', name: 'Kyoko' };

@@ -69,7 +69,7 @@ export function createBrowserSpeech(callbacks: {
   };
   let stopped: (() => void) | undefined;
   let cancelSpeech: (() => void) | undefined;
-  function start() {
+  function start(fromUserTap = false) {
     if (!enabled || speaking || running || disposed || !canRun()) return;
     if (!window.isSecureContext) {
       fail('マイクを利用するにはHTTPSまたはlocalhostで開いてください。');
@@ -81,7 +81,7 @@ export function createBrowserSpeech(callbacks: {
     startupTimer = setTimeout(() => {
       if (disposed || !canRun()) return;
       fail('音声認識が開始されませんでした。ブラウザのマイク許可と通信接続を確認して、再接続してください。');
-    }, 12000);
+    }, fromUserTap && keepRecognitionDuringSpeech ? 45000 : 12000);
     try {
       recognition.start();
     } catch (error) {
@@ -139,7 +139,7 @@ export function createBrowserSpeech(callbacks: {
       callbacks.error('');
       unlockSpeech();
       enabled = true;
-      start();
+      start(true);
     },
     setActive(nextActive) {
       if (disposed || active === nextActive) return;
@@ -178,9 +178,11 @@ export function createBrowserSpeech(callbacks: {
       await new Promise<void>(resolve => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ja-JP'; utterance.rate = 1;
-        utterance.volume = 1;
-        const japaneseVoice = window.speechSynthesis.getVoices().find(voice => voice.lang.replace('_', '-').toLowerCase().startsWith('ja'));
-        if (japaneseVoice) utterance.voice = japaneseVoice;
+        if (keepRecognitionDuringSpeech) {
+          utterance.volume = 1;
+          const japaneseVoice = window.speechSynthesis.getVoices().find(voice => voice.lang.replace('_', '-').toLowerCase().startsWith('ja'));
+          if (japaneseVoice) utterance.voice = japaneseVoice;
+        }
         let settled = false;
         let started = false;
         const finish = () => {
@@ -193,13 +195,19 @@ export function createBrowserSpeech(callbacks: {
         const playbackError = () => {
           if (settled) return;
           window.speechSynthesis.cancel();
-          callbacks.error('音声案内を再生できませんでした。画面の案内を確認し、そのまま名前を話してください。');
+          callbacks.error(keepRecognitionDuringSpeech
+            ? '音声案内を再生できませんでした。画面の案内を確認し、そのまま名前を話してください。'
+            : '音声案内を再生できませんでした。画面の案内を確認してください。');
           finish();
         };
-        const startupTimeout = setTimeout(() => { if (!started) playbackError(); }, 3000);
-        const timeout = setTimeout(playbackError, Math.min(45000, Math.max(8000, text.length * 500)));
+        const startupTimeout = keepRecognitionDuringSpeech
+          ? setTimeout(() => { if (!started) playbackError(); }, 3000)
+          : undefined;
+        const timeout = setTimeout(playbackError, keepRecognitionDuringSpeech
+          ? Math.min(45000, Math.max(8000, text.length * 500))
+          : 45000);
         cancelSpeech = finish;
-        utterance.onstart = () => { started = true; clearTimeout(startupTimeout); };
+        if (keepRecognitionDuringSpeech) utterance.onstart = () => { started = true; clearTimeout(startupTimeout); };
         utterance.onend = finish;
         utterance.onerror = event => {
           console.warn('SpeechSynthesis failed', { error: event.error });
