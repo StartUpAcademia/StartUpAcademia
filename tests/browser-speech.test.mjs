@@ -17,7 +17,7 @@ function setup(supported = true, options = {}) {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     constructor() { recognition = this; }
     start() { starts++; if (!options.silentStart) this.onstart?.(); }
-    abort() { this.onend?.(); }
+    abort() { if (!options.silentAbort) this.onend?.(); }
   }
   const window = { isSecureContext: options.secure !== false, SpeechRecognition: supported ? Recognition : undefined, speechSynthesis: { speak: u => { utterance = u; }, cancel() {} } };
   const navigator = {
@@ -73,7 +73,7 @@ test('silent recognition startup times out instead of falsely showing microphone
   env.service.start(); await flush(); assert.equal(env.starts, 2); env.service.dispose();
 });
 test('manual permission errors are distinguished and remain retryable', async () => {
-  for (const mediaError of ['NotAllowedError', 'NotFoundError', 'NotReadableError']) {
+  for (const mediaError of ['NotAllowedError', 'NotFoundError', 'NotReadableError', 'AbortError', 'InvalidStateError', 'OverconstrainedError', 'SecurityError']) {
     const env = setup(true, { mediaError }); env.service.start(); await flush();
     assert.equal(env.starts, 0); assert.equal(env.events.status.at(-1), 'error'); assert.ok(env.events.error.at(-1)); env.service.dispose();
   }
@@ -85,4 +85,21 @@ test('permission requests do not duplicate; late streams are released after disp
   env.service.dispose(); resolve({ getTracks: () => [{ stop() { stopped = true; } }] });
   await mediaPromise; await flush(); await flush();
   assert.equal(stopped, true); assert.equal(env.starts, 0);
+});
+test('speech resumes recognition even when Safari omits the abort end event', async () => {
+  const env = setup(true, { silentAbort: true }); await env.service.autoStart();
+  const speaking = env.service.speak('記録しました');
+  env.fire(1000); await flush();
+  env.utterance.onend(); await speaking;
+  env.fire(300);
+  assert.equal(env.starts, 2); env.service.dispose();
+});
+test('inactive pages release recognition and do not reconnect in the background', async () => {
+  const env = setup(); await env.service.autoStart();
+  env.service.setActive(false);
+  env.fire(350);
+  env.service.start(); await flush();
+  assert.equal(env.starts, 1);
+  env.service.setActive(true); await env.service.autoStart();
+  assert.equal(env.starts, 2); env.service.dispose();
 });
