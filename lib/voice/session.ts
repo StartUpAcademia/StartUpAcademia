@@ -10,10 +10,14 @@ export interface SessionDependencies {
   selected?: (resident: Resident) => void;
   update: (snapshot: Snapshot) => void;
 }
-const normalize = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[\s。、,.!?！？「」]/g, '');
+const normalize = (text: string) => text
+  .normalize('NFKC')
+  .toLowerCase()
+  .replace(/[\s　。、,.!?！？「」『』"'’]/g, '');
 export function commandOf(text: string) {
   const value = normalize(text);
-  if (['heycare', 'ヘイケア', 'ヘイケアー', '記録開始'].includes(value)) return 'wake';
+  const wakeValue = value.replace(/[\u3041-\u3096]/g, char => String.fromCharCode(char.charCodeAt(0) + 0x60));
+  if (['heycare', 'heyケア', 'ヘイケア', '記録開始'].some(command => wakeValue.includes(command))) return 'wake';
   if (['end', 'エンド'].includes(value)) return 'end';
   if (['登録', 'はい', '記録'].includes(value)) return 'save';
   if (['訂正', '違います'].includes(value)) return 'correct';

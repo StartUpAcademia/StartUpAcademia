@@ -11,7 +11,7 @@ import { createBrowserSpeech, type SpeechService, type MicrophoneStatus } from '
 
 const MIC_LABELS: Record<MicrophoneStatus, string> = {
   checking: 'マイクの許可状態を確認しています…',
-  permission_required: '初回はマイクの許可が必要です。許可済みなら次回から自動で待機します。',
+  permission_required: '下のボタンをタップしてマイクを開始してください。',
   requesting: 'マイクに接続しています。許可画面が出た場合は「許可」を選んでください。',
   starting: '音声認識に接続しています…',
   listening: '● マイク有効・聞き取り中',
@@ -90,7 +90,7 @@ export function VoiceProvider({children}: {children: ReactNode}) {
         <p className="text-[13px] leading-relaxed text-white/85">{snapshot.message}</p>
         <p className="text-xs text-white/85">{MIC_LABELS[micStatus]}</p>
         {(micStatus === 'permission_required' || micStatus === 'error') ? <button type="button" onClick={enable} className="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-primary">{micStatus === 'error' ? 'マイクに再接続する' : 'マイクを許可して開始'}</button> : null}
-        {active && live && <div className="rounded-lg bg-white/15 p-3 text-sm">聞き取り中：{live}</div>}
+        {live && <div className="rounded-lg bg-white/15 p-3 text-sm">聞き取り中：{live}</div>}
         {snapshot.draft && <div className="rounded-xl bg-white p-4 text-primary-dark">
           <p className="font-semibold">{snapshot.resident?.name}</p>
           <p className="mt-2 text-sm">{snapshot.draft.category}</p>
