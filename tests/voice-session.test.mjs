@@ -22,6 +22,13 @@ test('temperature variants go only into temperature; custom field and residual n
  for(const text of ['体温は39.4°c','体温は39.4°C','体温は３９．４℃','体温は39度4分']) {const r=parser.structureLocal(text,fields);assert.equal(r[0].value,'39.4℃');assert.equal(r[4].value,'');}
  const r=parser.structureLocal('体温は39.4度。血圧は120の80。水分量は200ml。右腕に赤みがあります。',fields);assert.equal(r[0].value,'39.4℃');assert.equal(r[1].value,'120 / 80');assert.equal(r[3].value,'200ml');assert.equal(r[4].value,'右腕に赤みがあります');
 });
+test('blood pressure variants go into blood pressure instead of special notes',()=>{
+ for(const text of ['血圧は120の80','血圧120/80','血圧は120対80','血圧上が120下が80','血圧は上が120、下が80','血圧は120 80','血圧は120で下が80']) {
+  const r=parser.structureLocal(text,fields);
+  assert.equal(r[1].value,'120 / 80',text);
+  assert.equal(r[4].value,'',text);
+ }
+});
 test('select resident before content; yes updates draft only; button commits all once',async()=>{
  const {session,store,selected}=setup();await session.hear('ヘイケア');await session.hear('田中花子さん');assert.deepEqual(selected,['r1']);assert.equal(session.snapshot.state,'RECORDING');
  await session.hear('体温は39.4°c');assert.equal(store.getDraft('r1'),null);await session.hear('はい');assert.equal(store.getRecords().length,0);assert.equal(store.getDraft('r1').fields[0].value,'39.4℃');

@@ -32,8 +32,10 @@ export function structureLocal(transcript: string, fields: FormatField[]): CareR
     if (/体温/.test(field.label)) {
       match = raw.match(/^(\d{2})(?:[.・点](\d+))?\s*(?:度|℃|°[cC])?\s*(?:(\d)分)?/);
       if (match) value = match[1] + (match[2] || match[3] ? '.' + (match[2] || match[3]) : '') + '℃';
-    } else if (/血圧/.test(field.label)) {
-      match = raw.match(/^(?:上(?:が|は)?\s*)?(\d{2,3})\s*(?:の|\/|、|,|で)\s*(?:下(?:が|は)?\s*)?(\d{2,3})/);
+    } else if (field.kind === 'blood_pressure' || /血圧/.test(field.label)) {
+      match = raw.match(
+        /^(?:上(?:が|は)?\s*)?(\d{2,3})(?:\s*(?:の|\/|対|と|から|、|,|で)\s*(?:下(?:が|は)?\s*)?|\s+|\s*下(?:が|は)?\s*)(\d{2,3})\s*(?:mmhg|ミリ(?:メートル)?水銀柱)?/i
+      );
       if (match) value = match[1] + ' / ' + match[2];
     } else if (field.kind === 'number' && field.key === 'water_intake') {
       match = raw.match(/^(\d+(?:\.\d+)?)\s*(?:ミリリットル|ミリ|ml)?/i);
