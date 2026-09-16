@@ -14,6 +14,127 @@ type NavigatorWithAudioSession = Navigator & {
   audioSession?: { type: AudioSessionType };
 };
 
+type WindowWithWebkitAudio = Window & typeof globalThis & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+const IOS_DEMO_AUDIO: Readonly<Record<string, string>> = {
+  '記録を開始します。誰の記録をしますか？': '/audio/voice/start-record.mp3',
+  '聞き取れませんでした。もう一度話してください。': '/audio/voice/retry.mp3',
+  '記録を終了します': '/audio/voice/end-record.mp3',
+  '記録中です。終了する場合はエンドと話してください': '/audio/voice/already-recording.mp3',
+  '利用者を特定できませんでした。登録されているフルネームでもう一度話してください': '/audio/voice/unknown-resident.mp3',
+  '訂正内容を話してください': '/audio/voice/correction.mp3',
+  '登録する場合は「はい」、修正する場合は「訂正」と話してください': '/audio/voice/confirm-save.mp3',
+  '確認画面の項目に反映しました。記録全体の保存は画面下の保存するボタンを押してください。': '/audio/voice/saved.mp3',
+  '記録内容を話してください': '/audio/voice/record-content.mp3',
+  'この内容を一時保存しますか？': '/audio/voice/confirm-temporary-save.mp3',
+  '下書きに反映できませんでした。もう一度「はい」と話してください。': '/audio/voice/save-error.mp3',
+  '田中 花子さんの記録を開始します。記録内容を話してください': '/audio/voice/resident-tanaka.mp3',
+  '鈴木 一郎さんの記録を開始します。記録内容を話してください': '/audio/voice/resident-suzuki.mp3',
+  '高橋 幸子さんの記録を開始します。記録内容を話してください': '/audio/voice/resident-takahashi.mp3',
+  '渡辺 誠さんの記録を開始します。記録内容を話してください': '/audio/voice/resident-watanabe.mp3',
+  '伊藤 みつさんの記録を開始します。記録内容を話してください': '/audio/voice/resident-ito.mp3',
+  '体温：36.5℃': '/audio/voice/demo-temperature-365.mp3',
+  '血圧：120 / 80': '/audio/voice/demo-blood-pressure-120-80.mp3',
+  '体温：36.5℃。血圧：120 / 80': '/audio/voice/demo-vitals-365.mp3',
+  '体温：37.2℃。血圧：120 / 80': '/audio/voice/demo-vitals-372.mp3',
+  '体温：39.4℃。血圧：120 / 80': '/audio/voice/demo-vitals-394.mp3',
+};
+
+function createIOSDemoAudio(enabled: boolean) {
+  if (!enabled) return null;
+  const AudioContextCtor = window.AudioContext
+    ?? (window as WindowWithWebkitAudio).webkitAudioContext;
+  if (!AudioContextCtor) return null;
+
+  let context: AudioContext | undefined;
+  let source: AudioBufferSourceNode | undefined;
+  let generation = 0;
+  let disposed = false;
+  const buffers = new Map<string, Promise<AudioBuffer>>();
+  const getContext = () => context ??= new AudioContextCtor();
+  const load = (path: string) => {
+    const cached = buffers.get(path);
+    if (cached) return cached;
+    const pending = fetch(path)
+      .then(response => {
+        if (!response.ok) throw new Error(`Audio request failed: ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .then(bytes => getContext().decodeAudioData(bytes))
+      .catch(error => {
+        buffers.delete(path);
+        throw error;
+      });
+    buffers.set(path, pending);
+    return pending;
+  };
+  const stop = () => {
+    generation++;
+    const current = source;
+    source = undefined;
+    if (current) {
+      try { current.stop(); } catch { /* Playback already ended. */ }
+    }
+  };
+
+  return {
+    unlock() {
+      if (disposed) return;
+      try {
+        const audioContext = getContext();
+        // Schedule a silent frame in the same tap as SpeechRecognition.start().
+        // Later prompts can then start from recognition callbacks on iOS.
+        const silent = audioContext.createBufferSource();
+        silent.buffer = audioContext.createBuffer(1, 1, audioContext.sampleRate);
+        silent.connect(audioContext.destination);
+        silent.start();
+        void audioContext.resume();
+        void load(IOS_DEMO_AUDIO['記録を開始します。誰の記録をしますか？']).catch(() => {});
+      } catch (error) {
+        console.warn('iPhone demo audio unlock failed', error);
+      }
+    },
+    async play(text: string) {
+      const path = IOS_DEMO_AUDIO[text];
+      if (!path || disposed) return false;
+      const playGeneration = generation;
+      try {
+        const audioContext = getContext();
+        await audioContext.resume();
+        const buffer = await load(path);
+        if (disposed || playGeneration !== generation) return false;
+        await new Promise<void>((resolve, reject) => {
+          const next = audioContext.createBufferSource();
+          source = next;
+          next.buffer = buffer;
+          next.connect(audioContext.destination);
+          next.onended = () => {
+            if (source === next) source = undefined;
+            resolve();
+          };
+          try { next.start(); } catch (error) { reject(error); }
+        });
+        return true;
+      } catch (error) {
+        console.warn('iPhone demo audio playback failed', { text, error });
+        return false;
+      }
+    },
+    stop,
+    suspend() {
+      stop();
+      if (context?.state === 'running') void context.suspend();
+    },
+    dispose() {
+      disposed = true;
+      stop();
+      if (context && context.state !== 'closed') void context.close();
+    },
+  };
+}
+
 export function createBrowserSpeech(callbacks: {
   status?(status: MicrophoneStatus): void;
   final(text: string): void; interim(text: string): void;
@@ -30,6 +151,7 @@ export function createBrowserSpeech(callbacks: {
   const audioSession = keepRecognitionDuringSpeech
     ? (navigator as NavigatorWithAudioSession).audioSession
     : undefined;
+  const demoAudio = createIOSDemoAudio(keepRecognitionDuringSpeech);
   let active = true, enabled = false, speaking = false, running = false, disposed = false;
   let speechUnlocked = !keepRecognitionDuringSpeech;
   let ignoreResultsUntil = 0;
@@ -72,6 +194,7 @@ export function createBrowserSpeech(callbacks: {
   const fail = (message: string) => {
     enabled = false;
     stopRecognition();
+    demoAudio?.suspend();
     setAudioSession('auto');
     status('error'); callbacks.error(message);
   };
@@ -163,6 +286,7 @@ export function createBrowserSpeech(callbacks: {
       // WebKit otherwise switches categories after capture begins, which can make
       // iPhone Screen Recording lose the page's synthesized guidance.
       setAudioSession('play-and-record');
+      demoAudio?.unlock();
       unlockSpeech();
       enabled = true;
       start(true);
@@ -178,6 +302,7 @@ export function createBrowserSpeech(callbacks: {
         cancelSpeech = undefined;
         callbacks.interim('');
         stopRecognition();
+        demoAudio?.suspend();
         setAudioSession('auto');
         return;
       }
@@ -203,7 +328,14 @@ export function createBrowserSpeech(callbacks: {
         try { recognition.abort(); } catch { finish(); }
       });
       if (disposed || !canRun()) { speaking = false; return; }
-      await new Promise<void>(resolve => {
+      let playedByDemoAudio = false;
+      if (demoAudio) {
+        cancelSpeech = () => demoAudio.stop();
+        playedByDemoAudio = await demoAudio.play(text);
+        cancelSpeech = undefined;
+      }
+      if (disposed || !canRun()) { speaking = false; return; }
+      if (!playedByDemoAudio) await new Promise<void>(resolve => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ja-JP'; utterance.rate = 1;
         if (keepRecognitionDuringSpeech) {
@@ -260,7 +392,7 @@ export function createBrowserSpeech(callbacks: {
       disposed = true; active = false; enabled = false; speaking = false;
       clearRecognitionTimers(); resolveStopped(); cancelSpeech?.();
       recognition.onend = null; recognition.onresult = null; recognition.onerror = null; recognition.onstart = null;
-      recognition.abort(); window.speechSynthesis.cancel(); setAudioSession('auto');
+      recognition.abort(); window.speechSynthesis.cancel(); demoAudio?.dispose(); setAudioSession('auto');
     },
   };
 }

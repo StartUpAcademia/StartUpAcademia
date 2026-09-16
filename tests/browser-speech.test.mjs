@@ -9,6 +9,7 @@ function setup(supported = true, options = {}) {
   let recognition, utterance;
   const spoken = [];
   const audioSessionTypes = [];
+  let webAudioStarts = 0;
   const events = { final: [], interim: [], error: [], listening: [], status: [] };
   let starts = 0, aborts = 0;
   const timers = new Map();
@@ -22,7 +23,24 @@ function setup(supported = true, options = {}) {
     abort() { aborts++; if (!options.silentAbort) this.onend?.(); }
   }
   const voices = options.voices ?? [];
-  const window = { isSecureContext: options.secure !== false, SpeechRecognition: supported ? Recognition : undefined, speechSynthesis: { speak: u => { utterance = u; spoken.push(u); }, cancel() {}, getVoices: () => voices } };
+  class AudioContext {
+    state = 'running';
+    sampleRate = 24000;
+    destination = {};
+    createBuffer() { return {}; }
+    createBufferSource() {
+      return {
+        connect() {},
+        start() { webAudioStarts++; this.onended?.(); },
+        stop() { this.onended?.(); },
+      };
+    }
+    resume() { this.state = 'running'; return Promise.resolve(); }
+    suspend() { this.state = 'suspended'; return Promise.resolve(); }
+    close() { this.state = 'closed'; return Promise.resolve(); }
+    decodeAudioData() { return Promise.resolve({}); }
+  }
+  const window = { isSecureContext: options.secure !== false, SpeechRecognition: supported ? Recognition : undefined, AudioContext: options.webAudio ? AudioContext : undefined, speechSynthesis: { speak: u => { utterance = u; spoken.push(u); }, cancel() {}, getVoices: () => voices } };
   const audioSession = options.audioSession ? {
     _type: 'auto',
     get type() { return this._type; },
@@ -32,9 +50,10 @@ function setup(supported = true, options = {}) {
     ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5, audioSession }
     : { userAgent: 'Mozilla/5.0', platform: 'Win32', maxTouchPoints: 0 };
   const exports = {};
-  vm.runInNewContext(source, { exports, window, navigator, SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } }, setTimeout: schedule, clearTimeout: unschedule });
+  const fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) });
+  vm.runInNewContext(source, { exports, window, navigator, fetch, SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } }, setTimeout: schedule, clearTimeout: unschedule });
   const service = exports.createBrowserSpeech(Object.fromEntries(Object.keys(events).map(key => [key, value => events[key].push(value)])));
-  return { service, events, spoken, audioSessionTypes, get starts() { return starts; }, get aborts() { return aborts; }, fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.fn(); } }, get recognition() { return recognition; }, get utterance() { return utterance; } };
+  return { service, events, spoken, audioSessionTypes, get webAudioStarts() { return webAudioStarts; }, get starts() { return starts; }, get aborts() { return aborts; }, fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.fn(); } }, get recognition() { return recognition; }, get utterance() { return utterance; } };
 }
 test('unsupported browser reports no service', () => assert.equal(setup(false).service, null));
 test('interim and final callbacks; recognition is muted during speech and disposed', async () => {
@@ -134,6 +153,18 @@ test('iPhone fixes the audio session before capture and restores it when inactiv
   assert.equal(env.starts, 1);
   env.service.setActive(false);
   assert.deepEqual(env.audioSessionTypes, ['play-and-record', 'auto']);
+});
+test('iPhone demo prompts use Web Audio so Screen Recording receives page audio', async () => {
+  const env = setup(true, { ios: true, audioSession: true, webAudio: true });
+  env.service.start();
+  const spokenBeforePrompt = env.spoken.length;
+  await env.service.speak('記録を開始します。誰の記録をしますか？');
+  assert.equal(env.spoken.length, spokenBeforePrompt);
+  assert.equal(env.webAudioStarts, 2);
+  assert.equal(env.starts, 1);
+  assert.equal(env.aborts, 0);
+  assert.equal(env.events.status.at(-1), 'listening');
+  env.service.dispose();
 });
 test('desktop does not alter the AudioSession API', () => {
   const env = setup(true, { audioSession: true });
