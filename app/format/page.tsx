@@ -17,6 +17,8 @@ interface PendingImage {
   dataUrl: string;
 }
 
+const IOS_STORED_IMAGE_LIMIT = 750_000;
+
 export default function FormatPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -27,6 +29,7 @@ export default function FormatPage() {
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [existingSchema, setExistingSchema] = useState<FacilityRecordSchema | null>(null);
+  const [savingOnIOS, setSavingOnIOS] = useState(false);
 
   useEffect(() => {
     const schema = getFacilitySchema(CURRENT_FACILITY_ID);
@@ -58,7 +61,10 @@ export default function FormatPage() {
 
     try {
       const { base64, mediaType, dataUrl } = await fileToBase64(file);
-      setPendingImage({ base64, mediaType, dataUrl });
+      const storedDataUrl = isIOSMobileDevice()
+        ? await createIOSStoredImage(file, dataUrl)
+        : dataUrl;
+      setPendingImage({ base64, mediaType, dataUrl: storedDataUrl });
 
       const res = await fetch("/api/extract-format", {
         method: "POST",
@@ -112,6 +118,9 @@ export default function FormatPage() {
 
   function confirm() {
     if (!pendingImage) return;
+    const isIOS = isIOSMobileDevice();
+    if (isIOS && savingOnIOS) return;
+
     const ordered = fields.map((f, i) => ({ ...f, order: i }));
     const now = new Date().toISOString();
     const schema: FacilityRecordSchema = {
@@ -125,8 +134,23 @@ export default function FormatPage() {
       aiExtractedFields,
       fields: ordered,
     };
-    saveFacilitySchema(schema);
-    router.push("/");
+
+    if (isIOS) {
+      setSavingOnIOS(true);
+      setError(null);
+    }
+
+    try {
+      saveFacilitySchema(schema);
+      router.push("/");
+    } catch (saveError) {
+      if (!isIOS) throw saveError;
+      console.error(saveError);
+      setError(
+        "フォーマットを保存できませんでした。Safariのサイトデータ容量を確認し、もう一度お試しください。",
+      );
+      setSavingOnIOS(false);
+    }
   }
 
   function recapture() {
@@ -134,11 +158,17 @@ export default function FormatPage() {
     setAiExtractedFields([]);
     setMissingFields([]);
     setPendingImage(null);
+    setSavingOnIOS(false);
+    setError(null);
     setMode("capture");
   }
 
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col">
+    <div
+      className={`mx-auto flex min-h-dvh w-full max-w-[430px] flex-col ${
+        mode === "review" ? "max-md:h-dvh max-md:min-h-0 max-md:overflow-hidden" : ""
+      }`}
+    >
       <div className="px-5 pt-6 pb-1">
         <div className="flex items-center gap-2">
           <Link href="/" className="text-muted-2 hover:text-primary" aria-label="ホームへ戻る">
@@ -228,7 +258,7 @@ export default function FormatPage() {
       )}
 
       {mode === "review" && (
-        <div className="flex flex-1 flex-col gap-3.5 overflow-hidden px-5 pt-2 pb-5">
+        <div className="flex flex-1 flex-col gap-3.5 overflow-hidden px-5 pt-2 pb-5 max-md:min-h-0">
           <div className="flex items-center gap-3 rounded-xl border border-border bg-surface p-3">
             <div className="flex h-14 w-11 shrink-0 items-center justify-center rounded-md bg-[#EFEDE6]">
               <FileIcon className="h-[18px] w-[18px]" stroke="#9B968A" />
@@ -249,7 +279,9 @@ export default function FormatPage() {
             </p>
           )}
 
-          <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
+          {error && <p className="text-[13px] text-red-600">{error}</p>}
+
+          <div className="flex flex-1 flex-col gap-2 overflow-y-auto max-md:min-h-0 max-md:overscroll-contain">
             {fields.map((field) => (
               <div key={field.id} className="flex flex-col gap-2 rounded-[10px] border border-border bg-surface p-3">
                 <div className="flex items-center gap-2">
@@ -340,17 +372,23 @@ export default function FormatPage() {
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={confirm}
-            disabled={fields.length === 0}
-            className="mt-1 w-full rounded-xl bg-primary py-4 text-[15px] font-semibold text-white hover:bg-primary-dark disabled:opacity-40"
-          >
-            このフォーマットで保存
-          </button>
-          <button type="button" onClick={recapture} className="self-center text-xs text-muted-2 underline">
-            別の用紙で撮り直す
-          </button>
+          <div className="flex shrink-0 flex-col items-center gap-3 md:contents">
+            <button
+              type="button"
+              onClick={confirm}
+              disabled={fields.length === 0 || savingOnIOS}
+              className="mt-1 w-full rounded-xl bg-primary py-4 text-[15px] font-semibold text-white hover:bg-primary-dark disabled:opacity-40 max-md:relative max-md:z-10 max-md:touch-manipulation"
+            >
+              このフォーマットで保存
+            </button>
+            <button
+              type="button"
+              onClick={recapture}
+              className="self-center text-xs text-muted-2 underline max-md:touch-manipulation"
+            >
+              別の用紙で撮り直す
+            </button>
+          </div>
         </div>
       )}
 
@@ -385,6 +423,67 @@ function fileToBase64(file: File): Promise<{ base64: string; mediaType: string; 
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function isIOSMobileDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iP(?:hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+async function createIOSStoredImage(file: File, fallback: string): Promise<string> {
+  if (fallback.length <= IOS_STORED_IMAGE_LIMIT) return fallback;
+
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await loadImage(objectUrl);
+    const variants = [
+      { maxDimension: 1280, quality: 0.72 },
+      { maxDimension: 960, quality: 0.62 },
+      { maxDimension: 720, quality: 0.55 },
+    ];
+    let compressed = fallback;
+
+    for (const variant of variants) {
+      compressed = renderStoredImage(image, variant.maxDimension, variant.quality);
+      if (compressed.length <= IOS_STORED_IMAGE_LIMIT) break;
+    }
+
+    return compressed;
+  } catch (imageError) {
+    console.warn("iOS向け保存画像の縮小に失敗したため、元画像を使用します。", imageError);
+    return fallback;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
+function renderStoredImage(image: HTMLImageElement, maxDimension: number, quality: number): string {
+  const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("画像の縮小処理を開始できませんでした");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", quality);
 }
 
 function CameraIcon({ className, stroke }: { className?: string; stroke: string }) {
