@@ -8,6 +8,7 @@ const source = ts.transpileModule(readFileSync(new URL('../lib/voice/browserSpee
 function setup(supported = true, options = {}) {
   let recognition, utterance;
   const spoken = [];
+  const audioSessionTypes = [];
   const events = { final: [], interim: [], error: [], listening: [], status: [] };
   let starts = 0, aborts = 0;
   const timers = new Map();
@@ -22,13 +23,18 @@ function setup(supported = true, options = {}) {
   }
   const voices = options.voices ?? [];
   const window = { isSecureContext: options.secure !== false, SpeechRecognition: supported ? Recognition : undefined, speechSynthesis: { speak: u => { utterance = u; spoken.push(u); }, cancel() {}, getVoices: () => voices } };
+  const audioSession = options.audioSession ? {
+    _type: 'auto',
+    get type() { return this._type; },
+    set type(value) { this._type = value; audioSessionTypes.push(value); },
+  } : undefined;
   const navigator = options.ios
-    ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5 }
+    ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5, audioSession }
     : { userAgent: 'Mozilla/5.0', platform: 'Win32', maxTouchPoints: 0 };
   const exports = {};
   vm.runInNewContext(source, { exports, window, navigator, SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } }, setTimeout: schedule, clearTimeout: unschedule });
   const service = exports.createBrowserSpeech(Object.fromEntries(Object.keys(events).map(key => [key, value => events[key].push(value)])));
-  return { service, events, spoken, get starts() { return starts; }, get aborts() { return aborts; }, fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.fn(); } }, get recognition() { return recognition; }, get utterance() { return utterance; } };
+  return { service, events, spoken, audioSessionTypes, get starts() { return starts; }, get aborts() { return aborts; }, fire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.fn(); } }, get recognition() { return recognition; }, get utterance() { return utterance; } };
 }
 test('unsupported browser reports no service', () => assert.equal(setup(false).service, null));
 test('interim and final callbacks; recognition is muted during speech and disposed', async () => {
@@ -119,6 +125,20 @@ test('iPhone keeps the tap-started recognition session alive while guidance is s
   env.utterance.onend(); await speaking;
   assert.equal(env.starts, 1);
   assert.equal(env.events.status.at(-1), 'listening');
+  env.service.dispose();
+});
+test('iPhone fixes the audio session before capture and restores it when inactive', () => {
+  const env = setup(true, { ios: true, audioSession: true });
+  env.service.start();
+  assert.deepEqual(env.audioSessionTypes, ['play-and-record']);
+  assert.equal(env.starts, 1);
+  env.service.setActive(false);
+  assert.deepEqual(env.audioSessionTypes, ['play-and-record', 'auto']);
+});
+test('desktop does not alter the AudioSession API', () => {
+  const env = setup(true, { audioSession: true });
+  env.service.start();
+  assert.deepEqual(env.audioSessionTypes, []);
   env.service.dispose();
 });
 test('blocked iPhone guidance returns to listening instead of ignoring speech for 45 seconds', async () => {

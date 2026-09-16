@@ -8,6 +8,12 @@ export interface SpeechService {
   speak(text: string): Promise<void>;
   dispose(): void;
 }
+
+type AudioSessionType = 'auto' | 'play-and-record';
+type NavigatorWithAudioSession = Navigator & {
+  audioSession?: { type: AudioSessionType };
+};
+
 export function createBrowserSpeech(callbacks: {
   status?(status: MicrophoneStatus): void;
   final(text: string): void; interim(text: string): void;
@@ -21,6 +27,9 @@ export function createBrowserSpeech(callbacks: {
   // Keep the session that was opened by the user's tap alive while guidance is spoken.
   const keepRecognitionDuringSpeech = /iP(?:hone|ad|od)/.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const audioSession = keepRecognitionDuringSpeech
+    ? (navigator as NavigatorWithAudioSession).audioSession
+    : undefined;
   let active = true, enabled = false, speaking = false, running = false, disposed = false;
   let speechUnlocked = !keepRecognitionDuringSpeech;
   let ignoreResultsUntil = 0;
@@ -29,6 +38,18 @@ export function createBrowserSpeech(callbacks: {
   const isVisible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
   const canRun = () => active && isVisible();
   const status = (value: MicrophoneStatus) => { if (!disposed) callbacks.status?.(value); };
+  const setAudioSession = (type: AudioSessionType) => {
+    if (!audioSession || audioSession.type === type) return;
+    try {
+      // iOS otherwise changes the session only after microphone capture starts,
+      // which can detach speech output from the audio captured by Screen Recording.
+      audioSession.type = type;
+    } catch (error) {
+      // AudioSession is still experimental in Safari. Recognition must continue
+      // normally when the installed iOS version exposes only a partial API.
+      console.warn('AudioSession configuration failed', { type, error });
+    }
+  };
   const clearRecognitionTimers = () => {
     clearTimeout(timer); clearTimeout(startupTimer);
     timer = undefined; startupTimer = undefined;
@@ -51,6 +72,7 @@ export function createBrowserSpeech(callbacks: {
   const fail = (message: string) => {
     enabled = false;
     stopRecognition();
+    setAudioSession('auto');
     status('error'); callbacks.error(message);
   };
   const unlockSpeech = () => {
@@ -137,6 +159,10 @@ export function createBrowserSpeech(callbacks: {
     start() {
       if (disposed || speaking || !canRun()) return;
       callbacks.error('');
+      // Configure this before both speech playback unlock and microphone capture.
+      // WebKit otherwise switches categories after capture begins, which can make
+      // iPhone Screen Recording lose the page's synthesized guidance.
+      setAudioSession('play-and-record');
       unlockSpeech();
       enabled = true;
       start(true);
@@ -152,12 +178,14 @@ export function createBrowserSpeech(callbacks: {
         cancelSpeech = undefined;
         callbacks.interim('');
         stopRecognition();
+        setAudioSession('auto');
         return;
       }
       status('permission_required');
     },
     async speak(text) {
       if (disposed || !canRun()) return;
+      setAudioSession('play-and-record');
       speaking = true; status('speaking'); clearTimeout(timer); clearTimeout(startupTimer); callbacks.interim('');
       if (running && !keepRecognitionDuringSpeech) await new Promise<void>(resolve => {
         let settled = false;
@@ -232,7 +260,7 @@ export function createBrowserSpeech(callbacks: {
       disposed = true; active = false; enabled = false; speaking = false;
       clearRecognitionTimers(); resolveStopped(); cancelSpeech?.();
       recognition.onend = null; recognition.onresult = null; recognition.onerror = null; recognition.onstart = null;
-      recognition.abort(); window.speechSynthesis.cancel();
+      recognition.abort(); window.speechSynthesis.cancel(); setAudioSession('auto');
     },
   };
 }
